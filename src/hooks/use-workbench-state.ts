@@ -139,13 +139,6 @@ type EnsureChildrenResult = {
   addedPaths: string[];
 };
 
-export const RECENT_LEAF_PROBE_WINDOW_MS = 1500;
-export const LEAF_REPROBE_DELAY_MS = 400;
-
-type RecentLeafProbe = {
-  firstSeenAt: number;
-};
-
 function treeNodesToSnapshotNodes(
   nodes: NodeTreeItem[],
   parentPath: string | null
@@ -187,13 +180,6 @@ export function useWorkbenchState() {
   const unlistenRefs = useRef<Map<string, () => void>>(new Map());
   const cacheUnlistenRefs = useRef<Map<string, () => void>>(new Map());
   const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
-  // Prevents concurrent getNodeDetails for the same path (distinct from pendingChildRefreshRefs which guards listChildren)
-  const pendingProbeRefs = useRef<Map<string, Set<string>>>(new Map());
-  // Maps connectionId → (path → firstSeenAt) for nodes that returned childrenCount=0 on probe
-  const recentLeafProbeRefs = useRef<Map<string, Map<string, RecentLeafProbe>>>(new Map());
-  const scheduledLeafProbeRefs = useRef<
-    Map<string, Map<string, ReturnType<typeof setTimeout>>>
-  >(new Map());
   const cacheSnapshotsRef = useRef<Map<string, TreeSnapshot>>(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -231,12 +217,6 @@ export function useWorkbenchState() {
         unlisten();
       }
       cacheUnlistenRefs.current.clear();
-      for (const timers of scheduledLeafProbeRefs.current.values()) {
-        for (const timer of timers.values()) {
-          clearTimeout(timer);
-        }
-      }
-      scheduledLeafProbeRefs.current.clear();
     };
   }, []);
 
@@ -260,12 +240,7 @@ export function useWorkbenchState() {
       pending.add(event.path);
       pendingChildRefreshRefs.current.set(event.connectionId, pending);
       try {
-        const result = await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
-        if (result) {
-          if (result.addedPaths.length) {
-            await probeFreshNodes(event.connectionId, result.addedPaths);
-          }
-        }
+        await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
       } finally {
         const next = pendingChildRefreshRefs.current.get(event.connectionId);
         next?.delete(event.path);
@@ -311,114 +286,9 @@ export function useWorkbenchState() {
         });
         syncCacheSnapshot(event.connectionId, nextTree);
       }
-      clearRecentLeafProbe(event.connectionId, event.path);
       await ensureChildrenLoaded(event.connectionId, getParentPath(event.path), { force: true });
     }
   });
-
-  const PROBE_CONCURRENCY = 5;
-
-  function clearScheduledLeafProbe(connectionId: string, path: string) {
-    const timers = scheduledLeafProbeRefs.current.get(connectionId);
-    const timer = timers?.get(path);
-    if (timer) {
-      clearTimeout(timer);
-      timers?.delete(path);
-    }
-    if (timers && timers.size === 0) {
-      scheduledLeafProbeRefs.current.delete(connectionId);
-    }
-  }
-
-  function clearRecentLeafProbe(connectionId: string, path: string) {
-    recentLeafProbeRefs.current.get(connectionId)?.delete(path);
-    if (recentLeafProbeRefs.current.get(connectionId)?.size === 0) {
-      recentLeafProbeRefs.current.delete(connectionId);
-    }
-    clearScheduledLeafProbe(connectionId, path);
-  }
-
-  function scheduleLeafReprobe(connectionId: string, path: string) {
-    const recent = recentLeafProbeRefs.current.get(connectionId)?.get(path);
-    if (!recent) return;
-    if (Date.now() - recent.firstSeenAt >= RECENT_LEAF_PROBE_WINDOW_MS) {
-      clearRecentLeafProbe(connectionId, path);
-      return;
-    }
-
-    const timers = scheduledLeafProbeRefs.current.get(connectionId) ?? new Map();
-    if (timers.has(path)) return;
-
-    const timer = setTimeout(() => {
-      clearScheduledLeafProbe(connectionId, path);
-      const activeProbe = recentLeafProbeRefs.current.get(connectionId)?.get(path);
-      if (!activeProbe) return;
-      if (Date.now() - activeProbe.firstSeenAt >= RECENT_LEAF_PROBE_WINDOW_MS) {
-        clearRecentLeafProbe(connectionId, path);
-        return;
-      }
-      void probeFreshNodes(connectionId, [path]);
-    }, LEAF_REPROBE_DELAY_MS);
-
-    timers.set(path, timer);
-    scheduledLeafProbeRefs.current.set(connectionId, timers);
-  }
-
-  async function probeFreshNodes(connectionId: string, paths: string[]): Promise<void> {
-    if (paths.length === 0) return;
-    const pending = pendingProbeRefs.current.get(connectionId) ?? new Set<string>();
-    pendingProbeRefs.current.set(connectionId, pending);
-
-    const pathsToProbe = paths.filter((p) => !pending.has(p));
-    for (const p of pathsToProbe) pending.add(p);
-
-    try {
-      for (let i = 0; i < pathsToProbe.length; i += PROBE_CONCURRENCY) {
-        const batch = pathsToProbe.slice(i, i + PROBE_CONCURRENCY);
-        await Promise.all(
-          batch.map(async (path) => {
-            try {
-              const details = await getNodeDetails(connectionId, path);
-              if (details.childrenCount > 0) {
-                // Has children — update tree and clear from observation window
-                const current = sessionsRef.current.get(connectionId);
-                if (current) {
-                  const nextTree = patchNodeMeta(current.treeNodes, path, { hasChildren: true });
-                  commitSession(connectionId, {
-                    ...current,
-                    treeNodes: nextTree,
-                  });
-                  syncCacheSnapshot(connectionId, nextTree);
-                }
-                nodeSearch.patchNodeMeta(connectionId, path, { hasChildren: true });
-                clearRecentLeafProbe(connectionId, path);
-              } else {
-                // No children yet — record timestamp for observation window
-                const connLeaves =
-                  recentLeafProbeRefs.current.get(connectionId) ?? new Map<string, RecentLeafProbe>();
-                const existing = connLeaves.get(path);
-                connLeaves.set(path, existing ?? { firstSeenAt: Date.now() });
-                recentLeafProbeRefs.current.set(connectionId, connLeaves);
-                scheduleLeafReprobe(connectionId, path);
-              }
-            } catch (error) {
-              if (!isNoNodeError(error)) {
-                console.warn("[probeFreshNodes] unexpected error probing", path, error);
-              }
-              // NoNode = race condition, silently ignored
-              clearRecentLeafProbe(connectionId, path);
-            } finally {
-              pending.delete(path);
-            }
-          })
-        );
-      }
-    } finally {
-      if (pending.size === 0) {
-        pendingProbeRefs.current.delete(connectionId);
-      }
-    }
-  }
 
   async function ensureWatchListener(connectionId: string) {
     if (unlistenRefs.current.has(connectionId)) return;
@@ -561,15 +431,6 @@ export function useWorkbenchState() {
     cacheUnlistenRefs.current.delete(connectionId);
     cacheSnapshotsRef.current.delete(connectionId);
     pendingChildRefreshRefs.current.delete(connectionId);
-    pendingProbeRefs.current.delete(connectionId);
-    recentLeafProbeRefs.current.delete(connectionId);
-    const timers = scheduledLeafProbeRefs.current.get(connectionId);
-    if (timers) {
-      for (const timer of timers.values()) {
-        clearTimeout(timer);
-      }
-      scheduledLeafProbeRefs.current.delete(connectionId);
-    }
     try {
       await disconnectServerCmd(connectionId);
     } catch {
