@@ -113,6 +113,8 @@ type EnsureChildrenResult = {
   addedPaths: string[];
 };
 
+export const RECENT_LEAF_PROBE_WINDOW_MS = 1500;
+
 export function useWorkbenchState() {
   const [ribbonMode, setRibbonMode] = useState<RibbonMode>("connections");
   const {
@@ -130,6 +132,12 @@ export function useWorkbenchState() {
   const nodeSearch = useNodeSearch(activeTabId);
   const unlistenRefs = useRef<Map<string, UnlistenFn>>(new Map());
   const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
+  // Prevents concurrent getNodeDetails for the same path (distinct from pendingChildRefreshRefs which guards listChildren)
+  const pendingProbeRefs = useRef<Map<string, Set<string>>>(new Map());
+  // Maps connectionId → (path → probeTimestamp) for nodes that returned childrenCount=0 on first probe
+  const recentLeafProbeRefs = useRef<Map<string, Map<string, number>>>(new Map());
+  // Paths that should be re-probed once an in-flight children_changed handler finishes
+  const queuedReprobeRefs = useRef<Map<string, Set<string>>>(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -159,19 +167,44 @@ export function useWorkbenchState() {
 
     if (event.eventType === "children_changed" || event.eventType === "node_created") {
       const pending = pendingChildRefreshRefs.current.get(event.connectionId) ?? new Set<string>();
-      if (pending.has(event.path)) return;
+      if (pending.has(event.path)) {
+        // A refresh of this path is already in flight — queue a re-probe so it runs when the handler finishes
+        const reQueue = queuedReprobeRefs.current.get(event.connectionId) ?? new Set<string>();
+        reQueue.add(event.path);
+        queuedReprobeRefs.current.set(event.connectionId, reQueue);
+        return;
+      }
       pending.add(event.path);
       pendingChildRefreshRefs.current.set(event.connectionId, pending);
+      // Snapshot which paths were already in the observation window BEFORE this refresh
+      const preExistingLeaves = new Set(
+        recentLeafProbeRefs.current.get(event.connectionId)?.keys() ?? []
+      );
+      let freshChildren: NodeTreeItem[] = [];
       try {
         const result = await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
-        if (result?.addedPaths.length) {
-          await probeFreshNodes(event.connectionId, result.addedPaths);
+        if (result) {
+          freshChildren = result.children;
+          if (result.addedPaths.length) {
+            await probeFreshNodes(event.connectionId, result.addedPaths);
+          }
+          // Re-probe children that were already in the observation window before this event
+          const windowedChildren = result.children.filter((c) => preExistingLeaves.has(c.path));
+          await reprobeWindowedLeaves(event.connectionId, windowedChildren);
         }
       } finally {
         const next = pendingChildRefreshRefs.current.get(event.connectionId);
         next?.delete(event.path);
         if (next && next.size === 0) {
           pendingChildRefreshRefs.current.delete(event.connectionId);
+        }
+        // If a re-probe was queued while this handler was in-flight, execute it now
+        // using the fresh children list captured during this handler's ensureChildrenLoaded
+        const reQueue = queuedReprobeRefs.current.get(event.connectionId);
+        if (reQueue?.has(event.path)) {
+          reQueue.delete(event.path);
+          if (reQueue.size === 0) queuedReprobeRefs.current.delete(event.connectionId);
+          await reprobeWindowedLeaves(event.connectionId, freshChildren);
         }
       }
       return;
@@ -207,6 +240,7 @@ export function useWorkbenchState() {
         activePath: current.activePath === event.path ? null : current.activePath,
         activeNode: current.activePath === event.path ? null : current.activeNode,
       }));
+      recentLeafProbeRefs.current.get(event.connectionId)?.delete(event.path);
       await ensureChildrenLoaded(event.connectionId, getParentPath(event.path), { force: true });
     }
   });
@@ -215,27 +249,71 @@ export function useWorkbenchState() {
 
   async function probeFreshNodes(connectionId: string, paths: string[]): Promise<void> {
     if (paths.length === 0) return;
-    // Process in batches of PROBE_CONCURRENCY
-    for (let i = 0; i < paths.length; i += PROBE_CONCURRENCY) {
-      const batch = paths.slice(i, i + PROBE_CONCURRENCY);
-      await Promise.all(
-        batch.map(async (path) => {
-          try {
-            const details = await getNodeDetails(connectionId, path);
-            if (details.childrenCount > 0) {
-              updateSession(connectionId, (s) => ({
-                ...s,
-                treeNodes: patchNodeMeta(s.treeNodes, path, { hasChildren: true }),
-              }));
+    const pending = pendingProbeRefs.current.get(connectionId) ?? new Set<string>();
+    pendingProbeRefs.current.set(connectionId, pending);
+
+    const pathsToProbe = paths.filter((p) => !pending.has(p));
+    for (const p of pathsToProbe) pending.add(p);
+
+    try {
+      for (let i = 0; i < pathsToProbe.length; i += PROBE_CONCURRENCY) {
+        const batch = pathsToProbe.slice(i, i + PROBE_CONCURRENCY);
+        await Promise.all(
+          batch.map(async (path) => {
+            try {
+              const details = await getNodeDetails(connectionId, path);
+              if (details.childrenCount > 0) {
+                // Has children — update tree and clear from observation window
+                updateSession(connectionId, (s) => ({
+                  ...s,
+                  treeNodes: patchNodeMeta(s.treeNodes, path, { hasChildren: true }),
+                }));
+                recentLeafProbeRefs.current.get(connectionId)?.delete(path);
+              } else {
+                // No children yet — record timestamp for observation window
+                const connLeaves = recentLeafProbeRefs.current.get(connectionId) ?? new Map<string, number>();
+                connLeaves.set(path, Date.now());
+                recentLeafProbeRefs.current.set(connectionId, connLeaves);
+              }
+            } catch (error) {
+              if (!isNoNodeError(error)) {
+                console.warn("[probeFreshNodes] unexpected error probing", path, error);
+              }
+              // NoNode = race condition, silently ignored
+            } finally {
+              pending.delete(path);
             }
-          } catch (error) {
-            if (!isNoNodeError(error)) {
-              console.warn("[probeFreshNodes] unexpected error probing", path, error);
-            }
-            // NoNode = race condition (node deleted before probe), silently ignored
-          }
-        })
-      );
+          })
+        );
+      }
+    } finally {
+      if (pending.size === 0) {
+        pendingProbeRefs.current.delete(connectionId);
+      }
+    }
+  }
+
+  async function reprobeWindowedLeaves(
+    connectionId: string,
+    currentChildren: NodeTreeItem[]
+  ): Promise<void> {
+    const connLeaves = recentLeafProbeRefs.current.get(connectionId);
+    if (!connLeaves || connLeaves.size === 0) return;
+
+    const now = Date.now();
+    const pathsToReprobe = currentChildren
+      .map((c) => c.path)
+      .filter((p) => {
+        const ts = connLeaves.get(p);
+        return ts !== undefined && now - ts < RECENT_LEAF_PROBE_WINDOW_MS;
+      });
+
+    for (const [p, ts] of connLeaves) {
+      if (now - ts >= RECENT_LEAF_PROBE_WINDOW_MS) connLeaves.delete(p);
+    }
+
+    if (pathsToReprobe.length > 0) {
+      await probeFreshNodes(connectionId, pathsToReprobe);
     }
   }
 
@@ -295,6 +373,9 @@ export function useWorkbenchState() {
   async function disconnectSession(connectionId: string) {
     unlistenRefs.current.get(connectionId)?.();
     unlistenRefs.current.delete(connectionId);
+    pendingProbeRefs.current.delete(connectionId);
+    recentLeafProbeRefs.current.delete(connectionId);
+    queuedReprobeRefs.current.delete(connectionId);
     try {
       await disconnectServerCmd(connectionId);
     } catch {
