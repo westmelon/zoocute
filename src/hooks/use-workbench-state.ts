@@ -141,7 +141,8 @@ type EnsureChildrenResult = {
 
 function treeNodesToSnapshotNodes(
   nodes: NodeTreeItem[],
-  parentPath: string | null
+  parentPath: string | null,
+  knownExpandablePaths?: Set<string>
 ): TreeSnapshot["nodes"] {
   const snapshotNodes: TreeSnapshot["nodes"] = [];
   for (const node of nodes) {
@@ -149,10 +150,10 @@ function treeNodesToSnapshotNodes(
       path: node.path,
       name: node.name,
       parentPath,
-      hasChildren: Boolean(node.hasChildren || node.children?.length),
+      hasChildren: Boolean(node.hasChildren || node.children?.length || knownExpandablePaths?.has(node.path)),
     });
     if (node.children?.length) {
-      snapshotNodes.push(...treeNodesToSnapshotNodes(node.children, node.path));
+      snapshotNodes.push(...treeNodesToSnapshotNodes(node.children, node.path, knownExpandablePaths));
     }
   }
   return snapshotNodes;
@@ -222,9 +223,12 @@ export function useWorkbenchState() {
 
   function syncCacheSnapshot(connectionId: string, treeNodes: NodeTreeItem[]) {
     const existing = cacheSnapshotsRef.current.get(connectionId);
+    const knownExpandablePaths = existing
+      ? new Set(existing.nodes.filter((node) => node.hasChildren).map((node) => node.path))
+      : undefined;
     cacheSnapshotsRef.current.set(connectionId, {
       status: existing?.status ?? "live",
-      nodes: treeNodesToSnapshotNodes(treeNodes, "/"),
+      nodes: treeNodesToSnapshotNodes(treeNodes, "/", knownExpandablePaths),
     });
     setCacheSnapshotVersion((version) => version + 1);
   }

@@ -36,32 +36,54 @@ const {
     paths: string[];
   }) {
     if (payload.eventType !== "nodes_added") return;
-    if (payload.parentPath !== "/ssdev/services") return;
+    if (payload.parentPath === "/ssdev/services") {
+      treeSnapshot = {
+        ...treeSnapshot,
+        nodes: [
+          { path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true },
+          {
+            path: "/ssdev/services",
+            name: "services",
+            parentPath: "/ssdev",
+            hasChildren: true,
+          },
+          {
+            path: "/ssdev/services/bbp",
+            name: "bbp",
+            parentPath: "/ssdev/services",
+            hasChildren: true,
+          },
+          {
+            path: "/ssdev/services/bbp/detail",
+            name: "detail",
+            parentPath: "/ssdev/services/bbp",
+            hasChildren: false,
+          },
+        ],
+      };
+      return;
+    }
 
-    treeSnapshot = {
-      ...treeSnapshot,
-      nodes: [
-        { path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true },
-        {
-          path: "/ssdev/services",
-          name: "services",
-          parentPath: "/ssdev",
-          hasChildren: true,
-        },
-        {
-          path: "/ssdev/services/bbp",
-          name: "bbp",
-          parentPath: "/ssdev/services",
-          hasChildren: true,
-        },
-        {
-          path: "/ssdev/services/bbp/detail",
-          name: "detail",
-          parentPath: "/ssdev/services/bbp",
-          hasChildren: false,
-        },
-      ],
-    };
+    if (payload.parentPath === "/services") {
+      treeSnapshot = {
+        ...treeSnapshot,
+        nodes: [
+          { path: "/services", name: "services", parentPath: "/", hasChildren: true },
+          {
+            path: "/services/bbp",
+            name: "bbp",
+            parentPath: "/services",
+            hasChildren: true,
+          },
+          {
+            path: "/services/bbp/detail",
+            name: "detail",
+            parentPath: "/services/bbp",
+            hasChildren: false,
+          },
+        ],
+      };
+    }
   }
 
   return {
@@ -489,6 +511,45 @@ describe("watch events", () => {
     });
 
     expect(getNodeDetailsMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves known expandable metadata across a forced refresh that returns a leaf", async () => {
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/services", name: "services", hasChildren: true }];
+      }
+      if (path === "/services") {
+        return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
+      }
+      return [];
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitCacheEvent({
+        connectionId: "c1",
+        eventType: "nodes_added",
+        parentPath: "/services",
+        paths: ["/services/bbp"],
+      });
+    });
+
+    await expandPath(result, "/services");
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    await waitFor(() => {
+      const services = findTreeNode(result.current.treeNodes, "/services");
+      const bbp = services?.children?.find((node) => node.path === "/services/bbp");
+      expect(bbp?.hasChildren).toBe(true);
+    });
   });
 
   it("removes a deleted node, clears the active panel, and refreshes the parent", async () => {
