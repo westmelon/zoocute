@@ -57,6 +57,17 @@ export function useNodeSearch(activeTabId: string | null) {
     }
   }
 
+  /**
+   * Patch metadata for a single cached node (e.g. after a probe reveals hasChildren=true).
+   */
+  function patchNodeMeta(
+    connectionId: string,
+    path: string,
+    patch: { hasChildren?: boolean }
+  ): void {
+    indexes.current.get(connectionId)?.patchNodeMeta(path, patch);
+  }
+
   /** Drop all cached data for a session on disconnect. */
   function clearSession(connectionId: string): void {
     indexes.current.get(connectionId)?.clear();
@@ -85,6 +96,7 @@ export function useNodeSearch(activeTabId: string | null) {
     indexNodes,
     bulkIndex,
     removeSubtree,
+    patchNodeMeta,
     clearSession,
     searchQuery,
     setSearchQuery,

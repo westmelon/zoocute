@@ -51,6 +51,7 @@ export interface CachedNode {
 export interface SearchResult {
   path: string;
   name: string;
+  hasChildren: boolean;
 }
 
 export type SearchMode = "tree" | "results";

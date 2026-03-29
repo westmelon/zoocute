@@ -242,6 +242,330 @@ describe("watch events", () => {
     });
   });
 
+  it("marks a newly recreated node as expandable after parent refresh without requiring openNode", async () => {
+    let phase = 0;
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/services", name: "services", hasChildren: true }];
+      }
+      if (path === "/services") {
+        if (phase === 0) {
+          phase = 1;
+          return [];
+        }
+        return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
+      }
+      return [];
+    });
+
+    getNodeDetailsMock.mockResolvedValue({
+      path: "/services/bbp",
+      value: "v1",
+      dataKind: "text",
+      displayModeLabel: "文本 · 可编辑",
+      editable: true,
+      rawPreview: "",
+      decodedPreview: "",
+      version: 1,
+      childrenCount: 2,
+      updatedAt: "",
+      cVersion: 0,
+      aclVersion: 0,
+      cZxid: null,
+      mZxid: null,
+      cTime: 0,
+      mTime: 0,
+      dataLength: 0,
+      ephemeral: false,
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await result.current.ensureChildrenLoaded("/services");
+    });
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    await waitFor(() => {
+      const services = result.current.treeNodes.find((node) => node.path === "/services");
+      const bbp = services?.children?.find((node) => node.path === "/services/bbp");
+      expect(bbp?.hasChildren).toBe(true);
+    });
+  });
+
+  it("probes newly discovered children after a parent refresh and marks them expandable", async () => {
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/services", name: "services", hasChildren: true }];
+      }
+      if (path === "/services") {
+        return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
+      }
+      return [];
+    });
+
+    getNodeDetailsMock.mockResolvedValue({
+      path: "/services/bbp",
+      value: "v1",
+      dataKind: "text",
+      displayModeLabel: "文本 · 可编辑",
+      editable: true,
+      rawPreview: "",
+      decodedPreview: "",
+      version: 1,
+      childrenCount: 3,
+      updatedAt: "",
+      cVersion: 0,
+      aclVersion: 0,
+      cZxid: null,
+      mZxid: null,
+      cTime: 0,
+      mTime: 0,
+      dataLength: 0,
+      ephemeral: false,
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    await waitFor(() => {
+      expect(getNodeDetailsMock).toHaveBeenCalledWith("c1", "/services/bbp");
+      const services = result.current.treeNodes.find((node) => node.path === "/services");
+      expect(services?.children?.[0]?.hasChildren).toBe(true);
+    });
+  });
+
+  it("silently ignores NoNode errors during probe and still marks other new nodes expandable", async () => {
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") return [{ path: "/services", name: "services", hasChildren: true }];
+      if (path === "/services") return [
+        { path: "/services/gone", name: "gone", hasChildren: false },
+        { path: "/services/bbp", name: "bbp", hasChildren: false },
+      ];
+      return [];
+    });
+
+    getNodeDetailsMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/services/gone") throw new Error("NoNode");
+      return {
+        path,
+        value: "v1",
+        dataKind: "text",
+        displayModeLabel: "文本 · 可编辑",
+        editable: true,
+        rawPreview: "",
+        decodedPreview: "",
+        version: 1,
+        childrenCount: 3,
+        updatedAt: "",
+        cVersion: 0,
+        aclVersion: 0,
+        cZxid: null,
+        mZxid: null,
+        cTime: 0,
+        mTime: 0,
+        dataLength: 0,
+        ephemeral: false,
+      };
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    await waitFor(() => {
+      const services = result.current.treeNodes.find((n) => n.path === "/services");
+      const bbp = services?.children?.find((n) => n.path === "/services/bbp");
+      // gone was NoNode — no error surfaced
+      expect(result.current.connectionError).toBeNull();
+      // bbp was successfully probed
+      expect(bbp?.hasChildren).toBe(true);
+    });
+  });
+
+  it("re-probes freshly added nodes when descendants arrive shortly after the parent node", async () => {
+    vi.useFakeTimers();
+    let detailsCalls = 0;
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/services", name: "services", hasChildren: true }];
+      }
+      if (path === "/services") {
+        return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
+      }
+      return [];
+    });
+
+    getNodeDetailsMock.mockImplementation(async () => {
+      detailsCalls += 1;
+      return {
+        path: "/services/bbp",
+        value: "v1",
+        dataKind: "text",
+        displayModeLabel: "文本 · 可编辑",
+        editable: true,
+        rawPreview: "",
+        decodedPreview: "",
+        version: 1,
+        childrenCount: detailsCalls === 1 ? 0 : 2,
+        updatedAt: "",
+        cVersion: 0,
+        aclVersion: 0,
+        cZxid: null,
+        mZxid: null,
+        cTime: 0,
+        mTime: 0,
+        dataLength: 0,
+        ephemeral: false,
+      };
+    });
+
+    const { result } = await connectAndGet();
+
+    // First event: bbp appears, first probe returns childrenCount=0 -> enters observation window
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    // Advance time within window, second event triggers re-probe
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    await waitFor(() => {
+      const services = result.current.treeNodes.find((node) => node.path === "/services");
+      expect(services?.children?.[0]?.hasChildren).toBe(true);
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("does not re-probe after the observation window expires", async () => {
+    vi.useFakeTimers();
+    let detailsCalls = 0;
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") return [{ path: "/services", name: "services", hasChildren: true }];
+      if (path === "/services") return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
+      return [];
+    });
+
+    getNodeDetailsMock.mockImplementation(async () => {
+      detailsCalls += 1;
+      return {
+        path: "/services/bbp", value: "v1", dataKind: "text",
+        displayModeLabel: "文本 · 可编辑", editable: true,
+        rawPreview: "", decodedPreview: "", version: 1,
+        childrenCount: detailsCalls === 1 ? 0 : 2,
+        updatedAt: "", cVersion: 0, aclVersion: 0,
+        cZxid: null, mZxid: null, cTime: 0, mTime: 0, dataLength: 0, ephemeral: false,
+      };
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitWatchEvent({ connectionId: "c1", eventType: "children_changed", path: "/services" });
+    });
+
+    // Advance past window (> 1500ms)
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+      await emitWatchEvent({ connectionId: "c1", eventType: "children_changed", path: "/services" });
+    });
+
+    await waitFor(() => {
+      const services = result.current.treeNodes.find((node) => node.path === "/services");
+      // Window expired — no re-probe, bbp stays as leaf
+      expect(services?.children?.[0]?.hasChildren).toBe(false);
+    });
+
+    expect(getNodeDetailsMock).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("syncs search cache hasChildren when probe marks a node as expandable", async () => {
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") return [{ path: "/services", name: "services", hasChildren: true }];
+      if (path === "/services") return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
+      return [];
+    });
+
+    getNodeDetailsMock.mockResolvedValue({
+      path: "/services/bbp",
+      value: "v1",
+      dataKind: "text",
+      displayModeLabel: "文本 · 可编辑",
+      editable: true,
+      rawPreview: "",
+      decodedPreview: "",
+      version: 1,
+      childrenCount: 3,
+      updatedAt: "",
+      cVersion: 0,
+      aclVersion: 0,
+      cZxid: null,
+      mZxid: null,
+      cTime: 0,
+      mTime: 0,
+      dataLength: 2,
+      ephemeral: false,
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    await waitFor(() => {
+      // Tree must be patched
+      const services = result.current.treeNodes.find((n) => n.path === "/services");
+      expect(services?.children?.[0]?.hasChildren).toBe(true);
+    });
+
+    // Search cache must also be in sync
+    act(() => { result.current.setSearchQuery("bbp"); });
+
+    await waitFor(() => {
+      const bbpResult = result.current.searchResults.find((r) => r.path === "/services/bbp");
+      expect(bbpResult).toBeDefined();
+      expect(bbpResult?.hasChildren).toBe(true);
+    });
+  });
+
   it("removes a deleted node, clears the active panel, and refreshes the parent", async () => {
     const { result } = await connectAndGet();
 
