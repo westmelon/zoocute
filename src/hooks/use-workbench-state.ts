@@ -268,6 +268,7 @@ export function useWorkbenchState() {
                   ...s,
                   treeNodes: patchNodeMeta(s.treeNodes, path, { hasChildren: true }),
                 }));
+                nodeSearch.patchNodeMeta(connectionId, path, { hasChildren: true });
                 recentLeafProbeRefs.current.get(connectionId)?.delete(path);
               } else {
                 // No children yet — record timestamp for observation window

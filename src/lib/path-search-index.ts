@@ -38,10 +38,16 @@ export class PathSearchIndex {
     const results: SearchResult[] = [];
     for (const node of this.byPath.values()) {
       if (node.name.toLowerCase().includes(kw)) {
-        results.push({ path: node.path, name: node.name });
+        results.push({ path: node.path, name: node.name, hasChildren: node.hasChildren });
       }
     }
     return results.sort((a, b) => rankResult(a, b, kw));
+  }
+
+  patchNodeMeta(path: string, patch: { hasChildren?: boolean }): void {
+    const node = this.byPath.get(path);
+    if (!node) return;
+    this.byPath.set(path, { ...node, ...patch });
   }
 
   clear(): void {

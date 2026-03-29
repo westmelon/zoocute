@@ -228,6 +228,7 @@ describe("watch events", () => {
       mZxid: null,
       cTime: 0,
       mTime: 0,
+      dataLength: 0,
       ephemeral: false,
     });
 
@@ -280,6 +281,7 @@ describe("watch events", () => {
       mZxid: null,
       cTime: 0,
       mTime: 0,
+      dataLength: 0,
       ephemeral: false,
     });
 
@@ -329,6 +331,7 @@ describe("watch events", () => {
         mZxid: null,
         cTime: 0,
         mTime: 0,
+        dataLength: 0,
         ephemeral: false,
       };
     });
@@ -385,6 +388,7 @@ describe("watch events", () => {
         mZxid: null,
         cTime: 0,
         mTime: 0,
+        dataLength: 0,
         ephemeral: false,
       };
     });
@@ -435,7 +439,7 @@ describe("watch events", () => {
         rawPreview: "", decodedPreview: "", version: 1,
         childrenCount: detailsCalls === 1 ? 0 : 2,
         updatedAt: "", cVersion: 0, aclVersion: 0,
-        cZxid: null, mZxid: null, cTime: 0, mTime: 0, ephemeral: false,
+        cZxid: null, mZxid: null, cTime: 0, mTime: 0, dataLength: 0, ephemeral: false,
       };
     });
 
@@ -459,6 +463,60 @@ describe("watch events", () => {
 
     expect(getNodeDetailsMock).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
+  });
+
+  it("syncs search cache hasChildren when probe marks a node as expandable", async () => {
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") return [{ path: "/services", name: "services", hasChildren: true }];
+      if (path === "/services") return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
+      return [];
+    });
+
+    getNodeDetailsMock.mockResolvedValue({
+      path: "/services/bbp",
+      value: "v1",
+      dataKind: "text",
+      displayModeLabel: "文本 · 可编辑",
+      editable: true,
+      rawPreview: "",
+      decodedPreview: "",
+      version: 1,
+      childrenCount: 3,
+      updatedAt: "",
+      cVersion: 0,
+      aclVersion: 0,
+      cZxid: null,
+      mZxid: null,
+      cTime: 0,
+      mTime: 0,
+      dataLength: 2,
+      ephemeral: false,
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    await waitFor(() => {
+      // Tree must be patched
+      const services = result.current.treeNodes.find((n) => n.path === "/services");
+      expect(services?.children?.[0]?.hasChildren).toBe(true);
+    });
+
+    // Search cache must also be in sync
+    act(() => { result.current.setSearchQuery("bbp"); });
+
+    await waitFor(() => {
+      const bbpResult = result.current.searchResults.find((r) => r.path === "/services/bbp");
+      expect(bbpResult).toBeDefined();
+      expect(bbpResult?.hasChildren).toBe(true);
+    });
   });
 
   it("removes a deleted node, clears the active panel, and refreshes the parent", async () => {
