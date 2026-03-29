@@ -112,6 +112,33 @@ function updateNodeHasChildren(
   });
 }
 
+function mergeProjectedTree(
+  projectedNodes: NodeTreeItem[],
+  fallbackNodes: NodeTreeItem[]
+): NodeTreeItem[] {
+  const fallbackByPath = new Map(fallbackNodes.map((node) => [node.path, node] as const));
+  const projectedPaths = new Set(projectedNodes.map((node) => node.path));
+  const merged = projectedNodes.map((node) => {
+    const fallback = fallbackByPath.get(node.path);
+    if (!fallback?.children?.length) {
+      return node;
+    }
+    return {
+      ...node,
+      children: node.children
+        ? mergeProjectedTree(node.children, fallback.children)
+        : fallback.children,
+    };
+  });
+
+  for (const fallback of fallbackNodes) {
+    if (projectedPaths.has(fallback.path)) continue;
+    merged.push(fallback);
+  }
+
+  return merged;
+}
+
 function getParentPath(path: string): string {
   const lastSlash = path.lastIndexOf("/");
   return lastSlash <= 0 ? "/" : path.substring(0, lastSlash);
@@ -172,9 +199,7 @@ export function useWorkbenchState() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
   const [indexingConnections, setIndexingConnections] = useState<Set<string>>(new Set());
-  const [cacheProjectionReadyConnections, setCacheProjectionReadyConnections] = useState<Set<string>>(
-    new Set()
-  );
+  const [, setCacheSnapshotVersion] = useState(0);
 
   // Force connections mode when all sessions are closed
   useEffect(() => {
@@ -383,7 +408,7 @@ export function useWorkbenchState() {
       void getTreeSnapshot(connectionId)
         .then((snapshot) => {
           cacheSnapshotsRef.current.set(connectionId, snapshot);
-          setCacheProjectionReadyConnections((prev) => new Set(prev).add(connectionId));
+          setCacheSnapshotVersion((version) => version + 1);
         })
         .catch(() => {
           // snapshot failure should not block existing tree flow
@@ -400,6 +425,7 @@ export function useWorkbenchState() {
     try {
       const snapshot = await getTreeSnapshot(connectionId);
       cacheSnapshotsRef.current.set(connectionId, snapshot);
+      setCacheSnapshotVersion((version) => version + 1);
     } catch {
       // snapshot failure should not block existing tree flow
     }
@@ -496,11 +522,6 @@ export function useWorkbenchState() {
     cacheUnlistenRefs.current.get(connectionId)?.();
     cacheUnlistenRefs.current.delete(connectionId);
     cacheSnapshotsRef.current.delete(connectionId);
-    setCacheProjectionReadyConnections((prev) => {
-      const next = new Set(prev);
-      next.delete(connectionId);
-      return next;
-    });
     pendingChildRefreshRefs.current.delete(connectionId);
     pendingProbeRefs.current.delete(connectionId);
     recentLeafProbeRefs.current.delete(connectionId);
@@ -797,8 +818,11 @@ export function useWorkbenchState() {
 
   // Derive current session's state for App.tsx consumption
   const cachedSnapshot = activeTabId ? cacheSnapshotsRef.current.get(activeTabId) ?? null : null;
-  const treeNodes = activeTabId && cachedSnapshot && cacheProjectionReadyConnections.has(activeTabId)
+  const projectedTree = cachedSnapshot
     ? buildProjectedTree(cachedSnapshot, activeSession?.expandedPaths ?? new Set<string>())
+    : null;
+  const treeNodes = projectedTree
+    ? mergeProjectedTree(projectedTree, activeSession?.treeNodes ?? [])
     : activeSession?.treeNodes ?? [];
   const expandedPaths = activeSession?.expandedPaths ?? new Set<string>();
   const loadingPaths = activeSession?.loadingPaths ?? new Set<string>();

@@ -20,13 +20,16 @@ export function buildProjectedTree(
     childrenByParent.set(key, children);
   }
 
-  const projectLevel = (parentPath: string | null): NodeTreeItem[] => {
+  const projectLevel = (parentPath: string | null, depth: number): NodeTreeItem[] => {
     const nodes = childrenByParent.get(parentKey(parentPath)) ?? [];
     return nodes.map((node) => ({
       path: node.path,
       name: node.name,
       hasChildren: node.hasChildren,
-      children: projectLevel(node.path),
+      children:
+        depth === 0 || expandedPaths.has(node.path)
+          ? projectLevel(node.path, depth + 1)
+          : undefined,
     }));
   };
 
@@ -35,6 +38,6 @@ export function buildProjectedTree(
     path: node.path,
     name: node.name,
     hasChildren: node.hasChildren,
-    children: projectLevel(node.path),
+    children: projectLevel(node.path, 0),
   }));
 }

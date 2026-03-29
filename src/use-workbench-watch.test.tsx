@@ -5,7 +5,13 @@ import {
   RECENT_LEAF_PROBE_WINDOW_MS,
   useWorkbenchState,
 } from "./hooks/use-workbench-state";
-import type { CacheEvent, NodeTreeItem, SavedConnection, WatchEvent } from "./lib/types";
+import type {
+  CacheEvent,
+  NodeTreeItem,
+  SavedConnection,
+  TreeSnapshot,
+  WatchEvent,
+} from "./lib/types";
 
 type WatchHandler = (event: { payload: WatchEvent }) => void;
 type CacheHandler = (event: { payload: CacheEvent }) => void;
@@ -22,7 +28,7 @@ const {
 } = vi.hoisted(() => {
   const unlistenMock = vi.fn();
   const handlers = new Map<string, unknown>();
-  let treeSnapshot = {
+  let treeSnapshot: TreeSnapshot = {
     status: "live" as const,
     nodes: [{ path: "/configs", name: "configs", parentPath: "/", hasChildren: true }],
   };
@@ -218,7 +224,7 @@ describe("watch events", () => {
     });
   });
 
-  it("shows nodes added under an unexpanded parent after cache delta arrives", async () => {
+  it("does not recursively project collapsed branches from a cache delta", async () => {
     const { result } = await connectAndGet();
 
     await act(async () => {
@@ -226,13 +232,37 @@ describe("watch events", () => {
         connectionId: "c1",
         eventType: "nodes_added",
         parentPath: "/ssdev/services",
-        paths: ["/ssdev/services/bbp"],
+        paths: ["/ssdev/services/bbp", "/ssdev/services/bbp/detail"],
       });
     });
 
     await waitFor(() => {
       const services = findTreeNode(result.current.treeNodes, "/ssdev/services");
-      expect(services?.children?.some((n) => n.path === "/ssdev/services/bbp")).toBe(true);
+      expect(services).toBeDefined();
+      expect(findTreeNode(result.current.treeNodes, "/ssdev/services/bbp/detail")).toBeUndefined();
+    });
+  });
+
+  it("falls back to activeSession.treeNodes before the first snapshot resolves", async () => {
+    let resolveSnapshot: ((snapshot: TreeSnapshot) => void) | undefined;
+    getTreeSnapshotMock.mockImplementationOnce(
+      () =>
+        new Promise<TreeSnapshot>((resolve) => {
+          resolveSnapshot = resolve;
+        })
+    );
+
+    const { result } = await connectAndGet();
+
+    expect(result.current.treeNodes.some((n) => n.path === "/configs")).toBe(true);
+    expect(result.current.treeNodes.some((n) => n.path === "/ssdev")).toBe(false);
+
+    await act(async () => {
+      resolveSnapshot?.({
+        status: "live",
+        nodes: [{ path: "/configs", name: "configs", parentPath: "/", hasChildren: true }],
+      });
+      await Promise.resolve();
     });
   });
 
