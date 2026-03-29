@@ -75,14 +75,11 @@ fn multiple_connection_ids_stored_independently() {
 }
 
 #[test]
-fn sessions_start_with_empty_subtree_cache() {
-    let state = AppState::default();
-    let sessions = state.sessions.lock().unwrap();
-    assert!(sessions.is_empty());
-}
-
-#[test]
-fn cache_status_starts_as_bootstrapping() {
+fn fresh_connection_cache_starts_empty_and_bootstrapping() {
     let cache = ConnectionCache::new();
+    let snapshot = cache.to_snapshot();
+
     assert_eq!(cache.status_label(), "bootstrapping");
+    assert_eq!(snapshot.status, "bootstrapping");
+    assert!(snapshot.nodes.is_empty());
 }
