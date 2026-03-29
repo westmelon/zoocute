@@ -5,6 +5,7 @@ import {
   RECENT_LEAF_PROBE_WINDOW_MS,
   useWorkbenchState,
 } from "./hooks/use-workbench-state";
+import { buildProjectedTree } from "./hooks/use-tree-projection";
 import type {
   CacheEvent,
   NodeTreeItem,
@@ -261,12 +262,11 @@ describe("watch events", () => {
     });
   });
 
-  it("falls back to activeSession.treeNodes before the first snapshot resolves", async () => {
-    let resolveSnapshot: ((snapshot: TreeSnapshot) => void) | undefined;
+  it("falls back to activeSession.treeNodes while the first snapshot is still pending", async () => {
     getTreeSnapshotMock.mockImplementationOnce(
       () =>
-        new Promise<TreeSnapshot>((resolve) => {
-          resolveSnapshot = resolve;
+        new Promise<TreeSnapshot>(() => {
+          // keep the snapshot pending so the render path must use activeSession.treeNodes
         })
     );
 
@@ -274,14 +274,36 @@ describe("watch events", () => {
 
     expect(result.current.treeNodes.some((n) => n.path === "/configs")).toBe(true);
     expect(result.current.treeNodes.some((n) => n.path === "/ssdev")).toBe(false);
+  });
 
-    await act(async () => {
-      resolveSnapshot?.({
-        status: "live",
-        nodes: [{ path: "/configs", name: "configs", parentPath: "/", hasChildren: true }],
-      });
-      await Promise.resolve();
-    });
+  it("hides descendants of a collapsed child when projecting a nested snapshot", () => {
+    const snapshot: TreeSnapshot = {
+      status: "live",
+      nodes: [
+        { path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true },
+        { path: "/ssdev/services", name: "services", parentPath: "/ssdev", hasChildren: true },
+        {
+          path: "/ssdev/services/bbp",
+          name: "bbp",
+          parentPath: "/ssdev/services",
+          hasChildren: true,
+        },
+        {
+          path: "/ssdev/services/bbp/detail",
+          name: "detail",
+          parentPath: "/ssdev/services/bbp",
+          hasChildren: false,
+        },
+      ],
+    };
+
+    const projected = buildProjectedTree(snapshot, new Set(["/ssdev"]));
+    const ssdev = projected.find((node) => node.path === "/ssdev");
+    const services = ssdev?.children?.find((node) => node.path === "/ssdev/services");
+
+    expect(ssdev?.children?.some((node) => node.path === "/ssdev/services")).toBe(true);
+    expect(services?.children?.some((node) => node.path === "/ssdev/services/bbp")).toBeUndefined();
+    expect(projected.some((node) => node.path === "/ssdev/services/bbp/detail")).toBe(false);
   });
 
   it("refreshes the active node details on data_changed", async () => {
