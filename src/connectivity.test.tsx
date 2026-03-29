@@ -51,7 +51,7 @@ const {
   })),
   getTreeSnapshotMock: vi.fn(async () => ({
     status: "live",
-    nodes: [{ path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true }],
+    nodes: [{ path: "/services", name: "services", parentPath: "/", hasChildren: true }],
   })),
 }));
 
@@ -197,6 +197,10 @@ describe("toggleNode / lazy loading", () => {
 
     await act(async () => {
       await result.current.toggleNode("/services");
+    });
+
+    await waitFor(() => {
+      expect(result.current.expandedPaths.has("/services")).toBe(true);
     });
 
     await waitFor(() => {

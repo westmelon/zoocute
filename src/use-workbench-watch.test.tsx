@@ -55,6 +55,12 @@ const {
           path: "/ssdev/services/bbp",
           name: "bbp",
           parentPath: "/ssdev/services",
+          hasChildren: true,
+        },
+        {
+          path: "/ssdev/services/bbp/detail",
+          name: "detail",
+          parentPath: "/ssdev/services/bbp",
           hasChildren: false,
         },
       ],
@@ -124,6 +130,15 @@ function findTreeNode(nodes: NodeTreeItem[], targetPath: string): NodeTreeItem |
     if (found) return found;
   }
   return undefined;
+}
+
+async function expandPath(result: { current: ReturnType<typeof useWorkbenchState> }, path: string) {
+  await act(async () => {
+    await result.current.toggleNode(path);
+  });
+  await waitFor(() => {
+    expect(result.current.expandedPaths.has(path)).toBe(true);
+  });
 }
 
 vi.mock("./lib/commands", () => ({
@@ -210,6 +225,8 @@ describe("watch events", () => {
       });
     });
 
+    await expandPath(result, "/configs");
+
     await waitFor(() => {
       const configs = result.current.treeNodes.find((node) => node.path === "/configs");
       expect(configs?.children?.map((child) => child.name)).toEqual(["feature-b"]);
@@ -237,8 +254,9 @@ describe("watch events", () => {
     });
 
     await waitFor(() => {
-      const services = findTreeNode(result.current.treeNodes, "/ssdev/services");
-      expect(services).toBeDefined();
+      const ssdev = findTreeNode(result.current.treeNodes, "/ssdev");
+      expect(ssdev).toBeDefined();
+      expect(ssdev?.children).toBeUndefined();
       expect(findTreeNode(result.current.treeNodes, "/ssdev/services/bbp/detail")).toBeUndefined();
     });
   });
@@ -404,6 +422,8 @@ describe("watch events", () => {
       });
     });
 
+    await expandPath(result, "/services");
+
     await waitFor(() => {
       const services = result.current.treeNodes.find((node) => node.path === "/services");
       const bbp = services?.children?.find((node) => node.path === "/services/bbp");
@@ -452,6 +472,8 @@ describe("watch events", () => {
         path: "/services",
       });
     });
+
+    await expandPath(result, "/services");
 
     await waitFor(() => {
       expect(getNodeDetailsMock).toHaveBeenCalledWith("c1", "/services/bbp");
@@ -503,6 +525,8 @@ describe("watch events", () => {
         path: "/services",
       });
     });
+
+    await expandPath(result, "/services");
 
     await waitFor(() => {
       const services = result.current.treeNodes.find((n) => n.path === "/services");
@@ -562,6 +586,8 @@ describe("watch events", () => {
       });
     });
 
+    await expandPath(result, "/services");
+
     await act(async () => {
       await vi.advanceTimersByTimeAsync(LEAF_REPROBE_DELAY_MS);
     });
@@ -596,6 +622,8 @@ describe("watch events", () => {
     await act(async () => {
       await emitWatchEvent({ connectionId: "c1", eventType: "children_changed", path: "/services" });
     });
+
+    await expandPath(result, "/services");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(RECENT_LEAF_PROBE_WINDOW_MS + LEAF_REPROBE_DELAY_MS + 100);
@@ -648,6 +676,8 @@ describe("watch events", () => {
         path: "/services",
       });
     });
+
+    await expandPath(result, "/services");
 
     await waitFor(() => {
       // Tree must be patched
@@ -755,6 +785,8 @@ describe("watch events", () => {
       release?.();
       await Promise.all([first, second]);
     });
+
+    await expandPath(result, "/configs");
 
     await waitFor(() => {
       const configs = result.current.treeNodes.find((node) => node.path === "/configs");
