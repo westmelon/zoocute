@@ -1,6 +1,10 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useWorkbenchState } from "./hooks/use-workbench-state";
+import {
+  LEAF_REPROBE_DELAY_MS,
+  RECENT_LEAF_PROBE_WINDOW_MS,
+  useWorkbenchState,
+} from "./hooks/use-workbench-state";
 import type { SavedConnection, WatchEvent } from "./lib/types";
 
 const {
@@ -403,7 +407,7 @@ describe("watch events", () => {
     });
   });
 
-  it("re-probes freshly added nodes when descendants arrive shortly after the parent node", async () => {
+  it("re-probes freshly added nodes on a timer even without another parent watch event", async () => {
     vi.useFakeTimers();
     let detailsCalls = 0;
     listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
@@ -451,14 +455,8 @@ describe("watch events", () => {
       });
     });
 
-    // Advance time within window, second event triggers re-probe
     await act(async () => {
-      vi.advanceTimersByTime(500);
-      await emitWatchEvent({
-        connectionId: "c1",
-        eventType: "children_changed",
-        path: "/services",
-      });
+      await vi.advanceTimersByTimeAsync(LEAF_REPROBE_DELAY_MS);
     });
 
     await waitFor(() => {
@@ -471,23 +469,19 @@ describe("watch events", () => {
 
   it("does not re-probe after the observation window expires", async () => {
     vi.useFakeTimers();
-    let detailsCalls = 0;
     listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
       if (path === "/") return [{ path: "/services", name: "services", hasChildren: true }];
       if (path === "/services") return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
       return [];
     });
 
-    getNodeDetailsMock.mockImplementation(async () => {
-      detailsCalls += 1;
-      return {
-        path: "/services/bbp", value: "v1", dataKind: "text",
-        displayModeLabel: "文本 · 可编辑", editable: true,
-        rawPreview: "", decodedPreview: "", version: 1,
-        childrenCount: detailsCalls === 1 ? 0 : 2,
-        updatedAt: "", cVersion: 0, aclVersion: 0,
-        cZxid: null, mZxid: null, cTime: 0, mTime: 0, dataLength: 0, ephemeral: false,
-      };
+    getNodeDetailsMock.mockResolvedValue({
+      path: "/services/bbp", value: "v1", dataKind: "text",
+      displayModeLabel: "文本 · 可编辑", editable: true,
+      rawPreview: "", decodedPreview: "", version: 1,
+      childrenCount: 0,
+      updatedAt: "", cVersion: 0, aclVersion: 0,
+      cZxid: null, mZxid: null, cTime: 0, mTime: 0, dataLength: 0, ephemeral: false,
     });
 
     const { result } = await connectAndGet();
@@ -496,19 +490,17 @@ describe("watch events", () => {
       await emitWatchEvent({ connectionId: "c1", eventType: "children_changed", path: "/services" });
     });
 
-    // Advance past window (> 1500ms)
     await act(async () => {
-      vi.advanceTimersByTime(3000);
-      await emitWatchEvent({ connectionId: "c1", eventType: "children_changed", path: "/services" });
+      await vi.advanceTimersByTimeAsync(RECENT_LEAF_PROBE_WINDOW_MS + LEAF_REPROBE_DELAY_MS + 100);
     });
 
     await waitFor(() => {
       const services = result.current.treeNodes.find((node) => node.path === "/services");
-      // Window expired — no re-probe, bbp stays as leaf
       expect(services?.children?.[0]?.hasChildren).toBe(false);
     });
 
-    expect(getNodeDetailsMock).toHaveBeenCalledTimes(1);
+    const expectedProbeCalls = 1 + Math.floor((RECENT_LEAF_PROBE_WINDOW_MS - 1) / LEAF_REPROBE_DELAY_MS);
+    expect(getNodeDetailsMock).toHaveBeenCalledTimes(expectedProbeCalls);
     vi.useRealTimers();
   });
 
