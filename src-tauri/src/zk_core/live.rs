@@ -10,7 +10,7 @@ use crate::domain::{
     TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
-use crate::zk_core::cache::ConnectionCache;
+use crate::zk_core::cache::{CacheStatus, ConnectionCache, NodeRecord};
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::interpreter::{hex_encode, interpret_data};
 
@@ -395,18 +395,52 @@ impl LiveAdapter {
         });
 
         let (client, status) = outcome?;
-        Ok((
-            Self {
-                client: Arc::new(client),
-                connection_id: connection_id.to_string(),
-                log_store,
-                app_handle,
-                children_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
-                data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
-                cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
-            },
-            status,
-        ))
+        let adapter = Self {
+            client: Arc::new(client),
+            connection_id: connection_id.to_string(),
+            log_store,
+            app_handle,
+            children_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
+        };
+        adapter.bootstrap_subtree_cache();
+        Ok((adapter, status))
+    }
+
+    pub fn bootstrap_subtree_cache(&self) {
+        let client = Arc::clone(&self.client);
+        let cache = Arc::clone(&self.cache);
+        let connection_id = self.connection_id.clone();
+        let log_store = Arc::clone(&self.log_store);
+
+        std::thread::spawn(move || {
+            append_cache_log(&log_store, &connection_id, "cache_bootstrap_started", "/");
+            match collect_full_tree_records(client.as_ref()) {
+                Ok(nodes) => {
+                    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.replace_all(nodes);
+                    guard.mark_live();
+                    append_cache_log(
+                        &log_store,
+                        &connection_id,
+                        "cache_bootstrap_completed",
+                        "/",
+                    );
+                }
+                Err(error) => {
+                    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.set_status(CacheStatus::Stale);
+                    append_cache_error_log(
+                        &log_store,
+                        &connection_id,
+                        "cache_bootstrap_failed",
+                        "/",
+                        &error,
+                    );
+                }
+            }
+        });
     }
 
     pub fn save_node(&self, path: &str, value: &str) -> Result<(), String> {
@@ -752,6 +786,78 @@ impl LiveAdapter {
 
 fn map_zk_error(error: zookeeper::ZkError) -> String {
     format!("{error:?}")
+}
+
+fn append_cache_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+) {
+    log_store.append(&ZkLogEntry {
+        timestamp: now_millis(),
+        level: "DEBUG".into(),
+        connection_id: Some(connection_id.to_string()),
+        operation: operation.to_string(),
+        path: Some(path.to_string()),
+        success: true,
+        duration_ms: 0,
+        message: operation.to_string(),
+        error: None,
+        meta: None,
+    });
+}
+
+fn append_cache_error_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+    error: &str,
+) {
+    log_store.append(&ZkLogEntry {
+        timestamp: now_millis(),
+        level: "ERROR".into(),
+        connection_id: Some(connection_id.to_string()),
+        operation: operation.to_string(),
+        path: Some(path.to_string()),
+        success: false,
+        duration_ms: 0,
+        message: operation.to_string(),
+        error: Some(error.to_string()),
+        meta: None,
+    });
+}
+
+fn collect_full_tree_records(client: &ZooKeeper) -> Result<Vec<NodeRecord>, String> {
+    let mut nodes = Vec::new();
+    let children = client.get_children("/", false).map_err(map_zk_error)?;
+    for name in children {
+        let child_path = format!("/{name}");
+        collect_node_records(client, &child_path, name, "/", &mut nodes)?;
+    }
+    Ok(nodes)
+}
+
+fn collect_node_records(
+    client: &ZooKeeper,
+    path: &str,
+    name: String,
+    parent_path: &str,
+    result: &mut Vec<NodeRecord>,
+) -> Result<(), String> {
+    let children = client.get_children(path, false).map_err(map_zk_error)?;
+    result.push(NodeRecord::new(
+        path,
+        &name,
+        Some(parent_path.to_string()),
+        !children.is_empty(),
+    ));
+    for child_name in children {
+        let child_path = format!("{path}/{child_name}");
+        collect_node_records(client, &child_path, child_name, path, result)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

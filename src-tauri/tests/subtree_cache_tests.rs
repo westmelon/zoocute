@@ -93,3 +93,20 @@ fn tree_snapshot_dto_carries_nodes_and_status() {
     assert_eq!(snapshot.status, "bootstrapping");
     assert_eq!(snapshot.nodes[0].path, "/ssdev");
 }
+
+#[test]
+fn snapshot_can_export_bootstrapped_root_nodes() {
+    let mut cache = ConnectionCache::new();
+    cache.upsert_children(
+        "/",
+        vec![
+            NodeRecord::new("/ssdev", "ssdev", Some("/".into()), true),
+            NodeRecord::new("/zookeeper", "zookeeper", Some("/".into()), true),
+        ],
+    );
+    cache.mark_live();
+
+    let snapshot = cache.to_snapshot();
+    assert_eq!(snapshot.status, "live");
+    assert_eq!(snapshot.nodes.len(), 2);
+}

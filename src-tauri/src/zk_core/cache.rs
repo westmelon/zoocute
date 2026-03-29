@@ -58,6 +58,29 @@ impl ConnectionCache {
         self.status = status;
     }
 
+    pub fn mark_live(&mut self) {
+        self.status = CacheStatus::Live;
+    }
+
+    pub fn mark_resyncing(&mut self) {
+        self.status = CacheStatus::Resyncing;
+    }
+
+    pub fn replace_all(&mut self, nodes: Vec<NodeRecord>) {
+        self.nodes_by_path.clear();
+        self.children_by_parent.clear();
+
+        for node in nodes {
+            if let Some(parent_path) = node.parent_path.clone() {
+                self.children_by_parent
+                    .entry(parent_path)
+                    .or_default()
+                    .push(node.path.clone());
+            }
+            self.nodes_by_path.insert(node.path.clone(), node);
+        }
+    }
+
     pub fn to_snapshot(&self) -> TreeSnapshotDto {
         let mut nodes = self
             .nodes_by_path
