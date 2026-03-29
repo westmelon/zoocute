@@ -7,18 +7,21 @@ import {
 } from "./hooks/use-workbench-state";
 import type { SavedConnection, WatchEvent } from "./lib/types";
 
+type WebviewHandler = (event: {
+  payload: { connectionId: string; eventType: string; path: string };
+}) => void;
+
 const {
   listChildrenMock,
   getNodeDetailsMock,
+  getTreeSnapshotMock,
   loadFullTreeMock,
   webviewListenMock,
   unlistenMock,
   emitWatchEvent,
 } = vi.hoisted(() => {
   const unlistenMock = vi.fn();
-  let handler:
-    | ((event: { payload: { connectionId: string; eventType: string; path: string } }) => void)
-    | null = null;
+  const handlers = new Map<string, WebviewHandler>();
 
   return {
     listChildrenMock: vi.fn(async (_connectionId: string, path: string) => {
@@ -50,14 +53,18 @@ const {
       dataLength: 8,
       ephemeral: false,
     })),
+    getTreeSnapshotMock: vi.fn(async () => ({
+      status: "live",
+      nodes: [{ path: "/configs", name: "configs", parentPath: "/", hasChildren: true }],
+    })),
     loadFullTreeMock: vi.fn(async () => []),
-    webviewListenMock: vi.fn(async (_eventName: string, cb: typeof handler) => {
-      handler = cb;
+    webviewListenMock: vi.fn(async (_eventName: string, cb: WebviewHandler) => {
+      handlers.set(_eventName, cb);
       return unlistenMock;
     }),
     unlistenMock,
     emitWatchEvent: async (payload: WatchEvent) => {
-      handler?.({ payload });
+      handlers.get("zk-watch-event")?.({ payload });
       await Promise.resolve();
     },
   };
@@ -73,6 +80,7 @@ vi.mock("./lib/commands", () => ({
   disconnectServer: vi.fn(async () => {}),
   listChildren: listChildrenMock,
   getNodeDetails: getNodeDetailsMock,
+  getTreeSnapshot: getTreeSnapshotMock,
   saveNode: vi.fn(async () => {}),
   createNode: vi.fn(async () => {}),
   deleteNode: vi.fn(async () => {}),
@@ -116,12 +124,13 @@ describe("watch events", () => {
     const { result } = await connectAndGet();
 
     expect(webviewListenMock).toHaveBeenCalledWith("zk-watch-event", expect.any(Function));
+    expect(webviewListenMock).toHaveBeenCalledWith("zk-cache-event", expect.any(Function));
 
     await act(async () => {
       await result.current.disconnectSession("c1");
     });
 
-    expect(unlistenMock).toHaveBeenCalledTimes(1);
+    expect(unlistenMock).toHaveBeenCalledTimes(2);
   });
 
   it("force-refreshes children when a children_changed event arrives", async () => {

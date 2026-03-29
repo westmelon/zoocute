@@ -109,6 +109,34 @@ describe("submitConnection", () => {
     expect(result.current.treeNodes.some((n) => n.name === "services")).toBe(true);
   });
 
+  it("loads tree snapshot after connection without switching tree rendering source", async () => {
+    getTreeSnapshotMock.mockResolvedValue({
+      status: "live",
+      nodes: [
+        { path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true },
+        {
+          path: "/ssdev/services",
+          name: "services",
+          parentPath: "/ssdev",
+          hasChildren: true,
+        },
+      ],
+    });
+
+    const { result } = renderHook(() => useWorkbenchState());
+
+    await act(async () => {
+      await result.current.submitConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "",
+        password: "",
+      });
+    });
+
+    expect(getTreeSnapshotMock).toHaveBeenCalledWith("local");
+  });
+
   it("sets connectionError on failure", async () => {
     connectServerMock.mockRejectedValueOnce(new Error("refused"));
     const { result } = renderHook(() => useWorkbenchState());

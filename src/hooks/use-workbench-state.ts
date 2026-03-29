@@ -9,11 +9,12 @@ import {
   createNode as createNodeCmd,
   deleteNode as deleteNodeCmd,
   getNodeDetails,
+  getTreeSnapshot,
   listChildren,
   loadFullTree as loadFullTreeCmd,
   saveNode,
 } from "../lib/commands";
-import type { NodeTreeItem, RibbonMode, WatchEvent } from "../lib/types";
+import type { CacheEvent, NodeTreeItem, RibbonMode, TreeSnapshot, WatchEvent } from "../lib/types";
 
 /** Returns the ancestor paths that must be expanded to make `path` visible in the tree.
  *  e.g. "/a/b/c" → ["/a", "/a/b"] */
@@ -153,6 +154,7 @@ export function useWorkbenchState() {
 
   const nodeSearch = useNodeSearch(activeTabId);
   const unlistenRefs = useRef<Map<string, () => void>>(new Map());
+  const cacheUnlistenRefs = useRef<Map<string, () => void>>(new Map());
   const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
   // Prevents concurrent getNodeDetails for the same path (distinct from pendingChildRefreshRefs which guards listChildren)
   const pendingProbeRefs = useRef<Map<string, Set<string>>>(new Map());
@@ -161,6 +163,7 @@ export function useWorkbenchState() {
   const scheduledLeafProbeRefs = useRef<
     Map<string, Map<string, ReturnType<typeof setTimeout>>>
   >(new Map());
+  const cacheSnapshotsRef = useRef<Map<string, TreeSnapshot>>(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
@@ -182,6 +185,10 @@ export function useWorkbenchState() {
         unlisten();
       }
       unlistenRefs.current.clear();
+      for (const unlisten of cacheUnlistenRefs.current.values()) {
+        unlisten();
+      }
+      cacheUnlistenRefs.current.clear();
       for (const timers of scheduledLeafProbeRefs.current.values()) {
         for (const timer of timers.values()) {
           clearTimeout(timer);
@@ -365,6 +372,34 @@ export function useWorkbenchState() {
     });
   }
 
+  async function ensureCacheListener(connectionId: string) {
+    if (cacheUnlistenRefs.current.has(connectionId)) return;
+    const handler = (event: { payload: CacheEvent }) => {
+      if (event.payload.connectionId !== connectionId) return;
+      void getTreeSnapshot(connectionId)
+        .then((snapshot) => {
+          cacheSnapshotsRef.current.set(connectionId, snapshot);
+        })
+        .catch(() => {
+          // snapshot failure should not block existing tree flow
+        });
+    };
+
+    const unlisten = await getCurrentWebviewWindow().listen<CacheEvent>("zk-cache-event", handler);
+    cacheUnlistenRefs.current.set(connectionId, () => {
+      void unlisten();
+    });
+  }
+
+  async function cacheTreeSnapshot(connectionId: string) {
+    try {
+      const snapshot = await getTreeSnapshot(connectionId);
+      cacheSnapshotsRef.current.set(connectionId, snapshot);
+    } catch {
+      // snapshot failure should not block existing tree flow
+    }
+  }
+
   async function submitConnection(params: {
     connectionString: string;
     username: string;
@@ -385,9 +420,15 @@ export function useWorkbenchState() {
       addSession(conn, rootNodes);
       nodeSearch.indexNodes(params.connectionId, "/", rootNodes);
       setRibbonMode("browse");
+      void cacheTreeSnapshot(params.connectionId);
       void ensureWatchListener(params.connectionId).catch((error) => {
         setConnectionError(
           error instanceof Error ? `watch listener 注册失败: ${error.message}` : "watch listener 注册失败"
+        );
+      });
+      void ensureCacheListener(params.connectionId).catch((error) => {
+        setConnectionError(
+          error instanceof Error ? `cache listener 注册失败: ${error.message}` : "cache listener 注册失败"
         );
       });
 
@@ -449,6 +490,9 @@ export function useWorkbenchState() {
   async function disconnectSession(connectionId: string) {
     unlistenRefs.current.get(connectionId)?.();
     unlistenRefs.current.delete(connectionId);
+    cacheUnlistenRefs.current.get(connectionId)?.();
+    cacheUnlistenRefs.current.delete(connectionId);
+    cacheSnapshotsRef.current.delete(connectionId);
     pendingChildRefreshRefs.current.delete(connectionId);
     pendingProbeRefs.current.delete(connectionId);
     recentLeafProbeRefs.current.delete(connectionId);
