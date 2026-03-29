@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(p[''''name''''],p[''''version'''']\\) for p in d[''''packages'''']]\")",
+      "Bash(find /Users/neolin/.cargo/registry/src -name types.rs -path *zookeeper*)",
+      "Bash(find /Users/neolin/.cargo -name *.rs -path *zookeeper-0*)",
+      "Bash(npm test:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vitest:*)"
+    ]
+  }
+}

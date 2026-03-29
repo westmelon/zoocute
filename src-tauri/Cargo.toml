@@ -1,0 +1,21 @@
+[package]
+name = "zoocute"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "zoocute_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.3", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.1.1", features = [] }
+zookeeper = "0.8.0"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
