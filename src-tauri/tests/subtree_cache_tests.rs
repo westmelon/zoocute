@@ -41,3 +41,38 @@ fn removing_subtree_drops_descendants_and_parent_links() {
     assert!(cache.node("/ssdev/services").is_none());
     assert!(cache.children_of("/").is_empty());
 }
+
+#[test]
+fn refreshing_parent_replaces_stale_children_and_descendants() {
+    let mut cache = ConnectionCache::new();
+    cache.upsert_children(
+        "/",
+        vec![NodeRecord::new("/ssdev", "ssdev", Some("/".into()), true)],
+    );
+    cache.upsert_children(
+        "/ssdev",
+        vec![NodeRecord::new(
+            "/ssdev/services",
+            "services",
+            Some("/ssdev".into()),
+            true,
+        )],
+    );
+
+    cache.upsert_children(
+        "/",
+        vec![NodeRecord::new(
+            "/zookeeper",
+            "zookeeper",
+            Some("/".into()),
+            true,
+        )],
+    );
+
+    assert!(cache.node("/ssdev").is_none());
+    assert!(cache.node("/ssdev/services").is_none());
+
+    let root_children = cache.children_of("/");
+    assert_eq!(root_children.len(), 1);
+    assert_eq!(root_children[0].path, "/zookeeper");
+}

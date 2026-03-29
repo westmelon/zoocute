@@ -31,6 +31,12 @@ impl ConnectionCache {
     }
 
     pub fn upsert_children(&mut self, parent_path: &str, children: Vec<NodeRecord>) {
+        if let Some(previous_children) = self.children_by_parent.remove(parent_path) {
+            for child_path in previous_children {
+                self.remove_subtree(&child_path);
+            }
+        }
+
         let child_paths = children
             .iter()
             .map(|child| child.path.clone())
