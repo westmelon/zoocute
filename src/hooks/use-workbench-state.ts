@@ -98,6 +98,21 @@ function getParentPath(path: string): string {
   return lastSlash <= 0 ? "/" : path.substring(0, lastSlash);
 }
 
+function isNoNodeError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return error.message.includes("NoNode") || error.message.includes("no node");
+  }
+  if (typeof error === "string") {
+    return error.includes("NoNode") || error.includes("no node");
+  }
+  return false;
+}
+
+type EnsureChildrenResult = {
+  children: NodeTreeItem[];
+  addedPaths: string[];
+};
+
 export function useWorkbenchState() {
   const [ribbonMode, setRibbonMode] = useState<RibbonMode>("connections");
   const {
@@ -114,6 +129,7 @@ export function useWorkbenchState() {
 
   const nodeSearch = useNodeSearch(activeTabId);
   const unlistenRefs = useRef<Map<string, UnlistenFn>>(new Map());
+  const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -142,7 +158,22 @@ export function useWorkbenchState() {
     if (!session) return;
 
     if (event.eventType === "children_changed" || event.eventType === "node_created") {
-      await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
+      const pending = pendingChildRefreshRefs.current.get(event.connectionId) ?? new Set<string>();
+      if (pending.has(event.path)) return;
+      pending.add(event.path);
+      pendingChildRefreshRefs.current.set(event.connectionId, pending);
+      try {
+        const result = await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
+        if (result?.addedPaths.length) {
+          await probeFreshNodes(event.connectionId, result.addedPaths);
+        }
+      } finally {
+        const next = pendingChildRefreshRefs.current.get(event.connectionId);
+        next?.delete(event.path);
+        if (next && next.size === 0) {
+          pendingChildRefreshRefs.current.delete(event.connectionId);
+        }
+      }
       return;
     }
 
@@ -179,6 +210,34 @@ export function useWorkbenchState() {
       await ensureChildrenLoaded(event.connectionId, getParentPath(event.path), { force: true });
     }
   });
+
+  const PROBE_CONCURRENCY = 5;
+
+  async function probeFreshNodes(connectionId: string, paths: string[]): Promise<void> {
+    if (paths.length === 0) return;
+    // Process in batches of PROBE_CONCURRENCY
+    for (let i = 0; i < paths.length; i += PROBE_CONCURRENCY) {
+      const batch = paths.slice(i, i + PROBE_CONCURRENCY);
+      await Promise.all(
+        batch.map(async (path) => {
+          try {
+            const details = await getNodeDetails(connectionId, path);
+            if (details.childrenCount > 0) {
+              updateSession(connectionId, (s) => ({
+                ...s,
+                treeNodes: patchNodeMeta(s.treeNodes, path, { hasChildren: true }),
+              }));
+            }
+          } catch (error) {
+            if (!isNoNodeError(error)) {
+              console.warn("[probeFreshNodes] unexpected error probing", path, error);
+            }
+            // NoNode = race condition (node deleted before probe), silently ignored
+          }
+        })
+      );
+    }
+  }
 
   async function ensureWatchListener(connectionId: string) {
     if (unlistenRefs.current.has(connectionId)) return;
@@ -249,15 +308,22 @@ export function useWorkbenchState() {
     connectionId: string,
     path: string,
     options?: { force?: boolean }
-  ) {
+  ): Promise<EnsureChildrenResult | undefined> {
     const session = sessions.get(connectionId);
-    if (!session) return;
+    if (!session) return undefined;
     if (path !== "/") {
       const targetNode = findNode(session.treeNodes, path);
-      if (!targetNode) return;
-      if (!options?.force && !targetNode.hasChildren) return;
-      if (!options?.force && targetNode.children) return;
+      if (!targetNode) return undefined;
+      if (!options?.force && !targetNode.hasChildren) return undefined;
+      if (!options?.force && targetNode.children) return undefined;
     }
+
+    // Snapshot current children BEFORE the await — used for addedPaths diff
+    const prevPaths = new Set(
+      path === "/"
+        ? session.treeNodes.map((n) => n.path)
+        : (findNode(session.treeNodes, path)?.children ?? []).map((n) => n.path)
+    );
 
     updateSession(connectionId, (s) => ({
       ...s,
@@ -283,16 +349,32 @@ export function useWorkbenchState() {
         };
       });
       nodeSearch.indexNodes(connectionId, path, children);
+
+      const addedPaths = children
+        .filter((c) => !prevPaths.has(c.path))
+        .map((c) => c.path);
+
+      return { children, addedPaths };
     } catch (error) {
+      const isDeletedDuringRefresh = options?.force && path !== "/" && isNoNodeError(error);
       updateSession(connectionId, (s) => ({
         ...s,
+        treeNodes: isDeletedDuringRefresh ? removeNode(s.treeNodes, path) : s.treeNodes,
+        activePath: isDeletedDuringRefresh && s.activePath === path ? null : s.activePath,
+        activeNode: isDeletedDuringRefresh && s.activePath === path ? null : s.activeNode,
         loadingPaths: (() => {
           const next = new Set(s.loadingPaths);
           next.delete(path);
           return next;
         })(),
       }));
+      if (isDeletedDuringRefresh) {
+        nodeSearch.removeSubtree(connectionId, path);
+        await ensureChildrenLoaded(connectionId, getParentPath(path), { force: true });
+        return undefined;
+      }
       setConnectionError(error instanceof Error ? error.message : "节点读取失败");
+      return undefined;
     }
   }
 
@@ -529,7 +611,7 @@ export function useWorkbenchState() {
     toggleNode,
     refreshActiveNode,
     ensureChildrenLoaded: (path: string, opts?: { force?: boolean }) =>
-      activeTabId ? ensureChildrenLoaded(activeTabId, path, opts) : Promise.resolve(),
+      activeTabId ? ensureChildrenLoaded(activeTabId, path, opts).then(() => {}) : Promise.resolve(),
     createNode,
     deleteNode: deleteNodeFn,
     updateDraft,
