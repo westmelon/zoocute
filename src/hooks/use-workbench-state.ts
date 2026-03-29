@@ -426,10 +426,8 @@ export function useWorkbenchState() {
           error instanceof Error ? `watch listener 注册失败: ${error.message}` : "watch listener 注册失败"
         );
       });
-      void ensureCacheListener(params.connectionId).catch((error) => {
-        setConnectionError(
-          error instanceof Error ? `cache listener 注册失败: ${error.message}` : "cache listener 注册失败"
-        );
+      void ensureCacheListener(params.connectionId).catch(() => {
+        // cache listener setup is best-effort and must not surface as a user-facing connection error
       });
 
       // Background: recursively fetch the full tree so all nodes are searchable,
