@@ -6,8 +6,8 @@ use tauri::{AppHandle, Emitter, Wry};
 use zookeeper::{Acl, CreateMode, WatchedEventType, Watcher, WatchedEvent, ZooKeeper};
 
 use crate::domain::{
-    CachedTreeNodeDto, ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto,
-    NodeDetailsDto, TreeSnapshotDto, WatchEventDto, ZkLogEntry,
+    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
+    TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
@@ -524,20 +524,9 @@ impl LiveAdapter {
     }
 
     pub fn get_tree_snapshot(&self) -> Result<TreeSnapshotDto, String> {
-        let nodes = self.load_full_tree()?;
-        let nodes = nodes
-            .into_iter()
-            .map(|node| CachedTreeNodeDto {
-                parent_path: parent_path_for(&node.path),
-                path: node.path,
-                name: node.name,
-                has_children: node.has_children,
-            })
-            .collect();
-
         Ok(TreeSnapshotDto {
-            status: "live".into(),
-            nodes,
+            status: "stale".into(),
+            nodes: vec![],
         })
     }
 
@@ -762,19 +751,6 @@ impl LiveAdapter {
 
 fn map_zk_error(error: zookeeper::ZkError) -> String {
     format!("{error:?}")
-}
-
-fn parent_path_for(path: &str) -> Option<String> {
-    if path == "/" {
-        return None;
-    }
-
-    let last_slash = path.rfind('/')?;
-    if last_slash == 0 {
-        Some("/".into())
-    } else {
-        Some(path[..last_slash].to_string())
-    }
 }
 
 #[cfg(test)]

@@ -118,11 +118,14 @@ pub fn get_tree_snapshot(
     connection_id: String,
     state: State<'_, AppState>,
 ) -> Result<TreeSnapshotDto, String> {
-    let sessions = state
-        .sessions
-        .lock()
-        .map_err(|_| "failed to acquire sessions lock".to_string())?;
-    match sessions.get(&connection_id) {
+    let adapter = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "failed to acquire sessions lock".to_string())?;
+        sessions.get(&connection_id).cloned()
+    };
+    match adapter {
         Some(adapter) => adapter.get_tree_snapshot(),
         None => Err(format!("no active session for connection {connection_id}")),
     }
