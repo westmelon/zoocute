@@ -108,6 +108,12 @@ export interface ConnectionResult {
   message: string;
 }
 
+export interface WatchEvent {
+  connectionId: string;
+  eventType: "children_changed" | "data_changed" | "node_deleted" | "node_created";
+  path: string;
+}
+
 export interface ActiveSession {
   connection: SavedConnection;
   treeNodes: NodeTreeItem[];

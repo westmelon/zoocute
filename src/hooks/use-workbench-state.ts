@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { usePersistedConnections } from "./use-persisted-connections";
 import { useSessionManager } from "./use-session-manager";
 import { useNodeSearch } from "./use-node-search";
@@ -12,7 +13,7 @@ import {
   loadFullTree as loadFullTreeCmd,
   saveNode,
 } from "../lib/commands";
-import type { NodeTreeItem, RibbonMode } from "../lib/types";
+import type { NodeTreeItem, RibbonMode, WatchEvent } from "../lib/types";
 
 /** Returns the ancestor paths that must be expanded to make `path` visible in the tree.
  *  e.g. "/a/b/c" → ["/a", "/a/b"] */
@@ -41,6 +42,7 @@ function mergeChildren(
   targetPath: string,
   children: NodeTreeItem[]
 ): NodeTreeItem[] {
+  if (targetPath === "/") return children;
   return nodes.map((node) => {
     if (node.path === targetPath) {
       return { ...node, hasChildren: children.length > 0, children };
@@ -48,6 +50,20 @@ function mergeChildren(
     if (!node.children?.length) return node;
     return { ...node, children: mergeChildren(node.children, targetPath, children) };
   });
+}
+
+function removeNode(nodes: NodeTreeItem[], targetPath: string): NodeTreeItem[] {
+  return nodes
+    .filter((node) => node.path !== targetPath)
+    .map((node) => {
+      if (!node.children?.length) return node;
+      return { ...node, children: removeNode(node.children, targetPath) };
+    });
+}
+
+function getParentPath(path: string): string {
+  const lastSlash = path.lastIndexOf("/");
+  return lastSlash <= 0 ? "/" : path.substring(0, lastSlash);
 }
 
 export function useWorkbenchState() {
@@ -65,6 +81,7 @@ export function useWorkbenchState() {
   } = useSessionManager();
 
   const nodeSearch = useNodeSearch(activeTabId);
+  const unlistenRefs = useRef<Map<string, UnlistenFn>>(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -78,6 +95,67 @@ export function useWorkbenchState() {
       setRibbonMode("connections");
     }
   }, [hasActiveSessions]);
+
+  useEffect(() => {
+    return () => {
+      for (const unlisten of unlistenRefs.current.values()) {
+        unlisten();
+      }
+      unlistenRefs.current.clear();
+    };
+  }, []);
+
+  const handleWatchEvent = useEffectEvent(async (event: WatchEvent) => {
+    const session = sessions.get(event.connectionId);
+    if (!session) return;
+
+    if (event.eventType === "children_changed" || event.eventType === "node_created") {
+      await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
+      return;
+    }
+
+    if (event.eventType === "data_changed") {
+      if (session.activePath !== event.path) return;
+      const isEditing =
+        session.editingPaths.has(event.path) && session.drafts[event.path] !== undefined;
+      if (isEditing) return;
+
+      try {
+        const nodeDetails = await getNodeDetails(event.connectionId, event.path);
+        updateSession(event.connectionId, (current) => {
+          if (current.activePath !== event.path) return current;
+          const stillEditing =
+            current.editingPaths.has(event.path) &&
+            current.drafts[event.path] !== undefined;
+          if (stillEditing) return current;
+          return { ...current, activeNode: nodeDetails };
+        });
+      } catch (error) {
+        setConnectionError(error instanceof Error ? error.message : "节点读取失败");
+      }
+      return;
+    }
+
+    if (event.eventType === "node_deleted") {
+      nodeSearch.removeSubtree(event.connectionId, event.path);
+      updateSession(event.connectionId, (current) => ({
+        ...current,
+        treeNodes: removeNode(current.treeNodes, event.path),
+        activePath: current.activePath === event.path ? null : current.activePath,
+        activeNode: current.activePath === event.path ? null : current.activeNode,
+      }));
+      await ensureChildrenLoaded(event.connectionId, getParentPath(event.path), { force: true });
+    }
+  });
+
+  async function ensureWatchListener(connectionId: string) {
+    if (unlistenRefs.current.has(connectionId)) return;
+    const unlisten = await listen<WatchEvent>("zk-watch-event", (event) => {
+      if (event.payload.connectionId !== connectionId) return;
+      void handleWatchEvent(event.payload);
+    });
+    unlistenRefs.current.set(connectionId, unlisten);
+  }
 
   async function submitConnection(params: {
     connectionString: string;
@@ -98,6 +176,9 @@ export function useWorkbenchState() {
       addSession(conn, rootNodes);
       nodeSearch.indexNodes(params.connectionId, "/", rootNodes);
       setRibbonMode("browse");
+      void ensureWatchListener(params.connectionId).catch(() => {
+        // Watch registration is best-effort; the session is still usable.
+      });
 
       // Background: recursively fetch the full tree so all nodes are searchable,
       // not just the ones the user has expanded. Runs after UI is already shown.
@@ -121,6 +202,8 @@ export function useWorkbenchState() {
   }
 
   async function disconnectSession(connectionId: string) {
+    unlistenRefs.current.get(connectionId)?.();
+    unlistenRefs.current.delete(connectionId);
     try {
       await disconnectServerCmd(connectionId);
     } catch {
@@ -137,9 +220,12 @@ export function useWorkbenchState() {
   ) {
     const session = sessions.get(connectionId);
     if (!session) return;
-    const targetNode = findNode(session.treeNodes, path);
-    if (!targetNode?.hasChildren) return;
-    if (!options?.force && targetNode.children) return;
+    if (path !== "/") {
+      const targetNode = findNode(session.treeNodes, path);
+      if (!targetNode) return;
+      if (!options?.force && !targetNode.hasChildren) return;
+      if (!options?.force && targetNode.children) return;
+    }
 
     updateSession(connectionId, (s) => ({
       ...s,
@@ -150,7 +236,7 @@ export function useWorkbenchState() {
       const children = await listChildren(connectionId, path);
       updateSession(connectionId, (s) => ({
         ...s,
-        treeNodes: mergeChildren(s.treeNodes, path, children),
+        treeNodes: path === "/" ? children : mergeChildren(s.treeNodes, path, children),
         loadingPaths: (() => {
           const next = new Set(s.loadingPaths);
           next.delete(path);
@@ -322,7 +408,7 @@ export function useWorkbenchState() {
     try {
       await deleteNodeCmd(activeTabId, path, recursive);
       nodeSearch.removeSubtree(activeTabId, path);
-      const parentPath = path.substring(0, path.lastIndexOf("/")) || "/";
+      const parentPath = getParentPath(path);
       await ensureChildrenLoaded(activeTabId, parentPath, { force: true });
     } catch (error) {
       setConnectionError(error instanceof Error ? error.message : "删除节点失败");

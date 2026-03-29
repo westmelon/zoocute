@@ -23,7 +23,7 @@ pub fn run() {
                 .unwrap_or_else(|_| std::path::PathBuf::from("logs"));
             let _ = std::fs::create_dir_all(&log_dir);
             let log_path = log_dir.join("zookeeper-debug.jsonl");
-            app.manage(AppState::new(log_path));
+            app.manage(AppState::new(log_path, app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -1,10 +1,12 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use zookeeper::{Acl, CreateMode, Watcher, WatchedEvent, ZooKeeper};
+use tauri::{AppHandle, Emitter, Wry};
+use zookeeper::{Acl, CreateMode, WatchedEventType, Watcher, WatchedEvent, ZooKeeper};
 
 use crate::domain::{
-    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto, ZkLogEntry,
+    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto, WatchEventDto,
+    ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
@@ -15,12 +17,79 @@ pub struct LiveAdapter {
     client: Arc<ZooKeeper>,
     connection_id: String,
     log_store: Arc<ZkLogStore>,
+    app_handle: AppHandle<Wry>,
 }
 
 struct NoopWatcher;
 
+#[derive(Clone)]
+struct ChildrenWatcher {
+    client: Arc<ZooKeeper>,
+    app_handle: AppHandle<Wry>,
+    connection_id: String,
+    path: String,
+}
+
+#[derive(Clone)]
+struct DataWatcher {
+    client: Arc<ZooKeeper>,
+    app_handle: AppHandle<Wry>,
+    connection_id: String,
+    path: String,
+}
+
 impl Watcher for NoopWatcher {
     fn handle(&self, _event: WatchedEvent) {}
+}
+
+impl Watcher for ChildrenWatcher {
+    fn handle(&self, event: WatchedEvent) {
+        let Some((event_type, should_reregister)) = map_children_watch_event(event.event_type) else {
+            return;
+        };
+
+        if should_reregister
+            && self
+                .client
+                .get_children_w(&self.path, self.clone())
+                .map_err(map_zk_error)
+                .is_err()
+        {
+            return;
+        }
+
+        emit_watch_event(
+            &self.app_handle,
+            &self.connection_id,
+            event_type,
+            &self.path,
+        );
+    }
+}
+
+impl Watcher for DataWatcher {
+    fn handle(&self, event: WatchedEvent) {
+        let Some((event_type, should_reregister)) = map_data_watch_event(event.event_type) else {
+            return;
+        };
+
+        if should_reregister
+            && self
+                .client
+                .get_data_w(&self.path, self.clone())
+                .map_err(map_zk_error)
+                .is_err()
+        {
+            return;
+        }
+
+        emit_watch_event(
+            &self.app_handle,
+            &self.connection_id,
+            event_type,
+            &self.path,
+        );
+    }
 }
 
 fn now_millis() -> i64 {
@@ -30,11 +99,46 @@ fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
+fn emit_watch_event(
+    app_handle: &AppHandle<Wry>,
+    connection_id: &str,
+    event_type: &str,
+    path: &str,
+) {
+    let _ = app_handle.emit(
+        "zk-watch-event",
+        WatchEventDto {
+            connection_id: connection_id.to_string(),
+            event_type: event_type.to_string(),
+            path: path.to_string(),
+        },
+    );
+}
+
+fn map_children_watch_event(event_type: WatchedEventType) -> Option<(&'static str, bool)> {
+    match event_type {
+        WatchedEventType::NodeChildrenChanged | WatchedEventType::NodeCreated => {
+            Some(("children_changed", true))
+        }
+        WatchedEventType::NodeDeleted => Some(("node_deleted", false)),
+        _ => None,
+    }
+}
+
+fn map_data_watch_event(event_type: WatchedEventType) -> Option<(&'static str, bool)> {
+    match event_type {
+        WatchedEventType::NodeDataChanged => Some(("data_changed", true)),
+        WatchedEventType::NodeDeleted => Some(("node_deleted", false)),
+        _ => None,
+    }
+}
+
 impl LiveAdapter {
     pub fn connect_live(
         connection_id: &str,
         request: &ConnectRequestDto,
         log_store: Arc<ZkLogStore>,
+        app_handle: AppHandle<Wry>,
     ) -> Result<(Self, ConnectionStatusDto), String> {
         let start = Instant::now();
 
@@ -92,6 +196,7 @@ impl LiveAdapter {
                 client: Arc::new(client),
                 connection_id: connection_id.to_string(),
                 log_store,
+                app_handle,
             },
             status,
         ))
@@ -346,7 +451,16 @@ impl ReadOnlyZkAdapter for LiveAdapter {
 
 impl LiveAdapter {
     fn do_list_children(&self, path: &str) -> Result<Vec<LoadedTreeNodeDto>, String> {
-        let children = self.client.get_children(path, false).map_err(map_zk_error)?;
+        let watcher = ChildrenWatcher {
+            client: Arc::clone(&self.client),
+            app_handle: self.app_handle.clone(),
+            connection_id: self.connection_id.clone(),
+            path: path.to_string(),
+        };
+        let children = self
+            .client
+            .get_children_w(path, watcher)
+            .map_err(map_zk_error)?;
         children
             .into_iter()
             .map(|name| {
@@ -369,7 +483,13 @@ impl LiveAdapter {
     }
 
     fn do_get_node(&self, path: &str) -> Result<NodeDetailsDto, String> {
-        let (data, stat) = self.client.get_data(path, false).map_err(map_zk_error)?;
+        let watcher = DataWatcher {
+            client: Arc::clone(&self.client),
+            app_handle: self.app_handle.clone(),
+            connection_id: self.connection_id.clone(),
+            path: path.to_string(),
+        };
+        let (data, stat) = self.client.get_data_w(path, watcher).map_err(map_zk_error)?;
         let interp = interpret_data(&data);
         let (value, format_hint) = match String::from_utf8(data) {
             Ok(text) => (text, None),
@@ -401,4 +521,47 @@ impl LiveAdapter {
 
 fn map_zk_error(error: zookeeper::ZkError) -> String {
     format!("{error:?}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zookeeper::WatchedEventType;
+
+    #[test]
+    fn children_watch_events_map_to_expected_app_events() {
+        assert_eq!(
+            map_children_watch_event(WatchedEventType::NodeChildrenChanged),
+            Some(("children_changed", true))
+        );
+        assert_eq!(
+            map_children_watch_event(WatchedEventType::NodeCreated),
+            Some(("children_changed", true))
+        );
+        assert_eq!(
+            map_children_watch_event(WatchedEventType::NodeDeleted),
+            Some(("node_deleted", false))
+        );
+        assert_eq!(
+            map_children_watch_event(WatchedEventType::NodeDataChanged),
+            None
+        );
+    }
+
+    #[test]
+    fn data_watch_events_map_to_expected_app_events() {
+        assert_eq!(
+            map_data_watch_event(WatchedEventType::NodeDataChanged),
+            Some(("data_changed", true))
+        );
+        assert_eq!(
+            map_data_watch_event(WatchedEventType::NodeDeleted),
+            Some(("node_deleted", false))
+        );
+        assert_eq!(map_data_watch_event(WatchedEventType::NodeCreated), None);
+        assert_eq!(
+            map_data_watch_event(WatchedEventType::NodeChildrenChanged),
+            None
+        );
+    }
 }
