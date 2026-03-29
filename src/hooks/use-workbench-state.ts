@@ -488,7 +488,6 @@ export function useWorkbenchState() {
       const rootNodes = await listChildren(params.connectionId, "/");
       const conn = savedConnections.find((c) => c.id === params.connectionId)!;
       addSession(conn, rootNodes);
-      syncCacheSnapshot(params.connectionId, rootNodes);
       nodeSearch.indexNodes(params.connectionId, "/", rootNodes);
       setRibbonMode("browse");
       void cacheTreeSnapshot(params.connectionId);
