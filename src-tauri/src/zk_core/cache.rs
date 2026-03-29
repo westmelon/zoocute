@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::domain::{CachedTreeNodeDto, TreeSnapshotDto};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRecord {
     pub path: String,
@@ -19,15 +21,61 @@ impl NodeRecord {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheStatus {
+    Bootstrapping,
+    Live,
+    Resyncing,
+    Stale,
+}
+
+#[derive(Debug)]
 pub struct ConnectionCache {
+    status: CacheStatus,
     nodes_by_path: HashMap<String, NodeRecord>,
     children_by_parent: HashMap<String, Vec<String>>,
 }
 
 impl ConnectionCache {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            status: CacheStatus::Bootstrapping,
+            nodes_by_path: HashMap::new(),
+            children_by_parent: HashMap::new(),
+        }
+    }
+
+    pub fn status_label(&self) -> &'static str {
+        match self.status {
+            CacheStatus::Bootstrapping => "bootstrapping",
+            CacheStatus::Live => "live",
+            CacheStatus::Resyncing => "resyncing",
+            CacheStatus::Stale => "stale",
+        }
+    }
+
+    pub fn set_status(&mut self, status: CacheStatus) {
+        self.status = status;
+    }
+
+    pub fn to_snapshot(&self) -> TreeSnapshotDto {
+        let mut nodes = self
+            .nodes_by_path
+            .values()
+            .cloned()
+            .map(|node| CachedTreeNodeDto {
+                path: node.path,
+                name: node.name,
+                parent_path: node.parent_path,
+                has_children: node.has_children,
+            })
+            .collect::<Vec<_>>();
+        nodes.sort_by(|left, right| left.path.cmp(&right.path));
+
+        TreeSnapshotDto {
+            status: self.status_label().to_string(),
+            nodes,
+        }
     }
 
     pub fn upsert_children(&mut self, parent_path: &str, children: Vec<NodeRecord>) {
@@ -84,5 +132,11 @@ impl ConnectionCache {
         }
 
         self.nodes_by_path.remove(path);
+    }
+}
+
+impl Default for ConnectionCache {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -10,6 +10,7 @@ use crate::domain::{
     TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
+use crate::zk_core::cache::ConnectionCache;
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::interpreter::{hex_encode, interpret_data};
 
@@ -21,6 +22,7 @@ pub struct LiveAdapter {
     app_handle: AppHandle<Wry>,
     children_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
     data_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
+    cache: Arc<std::sync::Mutex<ConnectionCache>>,
 }
 
 struct NoopWatcher;
@@ -401,6 +403,7 @@ impl LiveAdapter {
                 app_handle,
                 children_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
                 data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
+                cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
             },
             status,
         ))
@@ -524,10 +527,8 @@ impl LiveAdapter {
     }
 
     pub fn get_tree_snapshot(&self) -> Result<TreeSnapshotDto, String> {
-        Ok(TreeSnapshotDto {
-            status: "stale".into(),
-            nodes: vec![],
-        })
+        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(cache.to_snapshot())
     }
 
     /// Enumerate all children of `path` and recurse into each one.

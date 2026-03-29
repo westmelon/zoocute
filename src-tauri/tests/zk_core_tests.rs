@@ -1,6 +1,7 @@
 use zoocute_lib::commands::AppState;
 use zoocute_lib::domain::{ConnectRequestDto, LoadedTreeNodeDto};
 use zoocute_lib::zk_core::adapter::ReadOnlyZkAdapter;
+use zoocute_lib::zk_core::cache::ConnectionCache;
 use zoocute_lib::zk_core::interpreter::DataKind;
 use zoocute_lib::zk_core::mock::MockAdapter;
 use zoocute_lib::zk_core::types::AuthMode;
@@ -71,4 +72,17 @@ fn multiple_connection_ids_stored_independently() {
     let sessions = state.sessions.lock().unwrap();
     assert!(!sessions.contains_key("conn-a"));
     assert!(!sessions.contains_key("conn-b"));
+}
+
+#[test]
+fn sessions_start_with_empty_subtree_cache() {
+    let state = AppState::default();
+    let sessions = state.sessions.lock().unwrap();
+    assert!(sessions.is_empty());
+}
+
+#[test]
+fn cache_status_starts_as_bootstrapping() {
+    let cache = ConnectionCache::new();
+    assert_eq!(cache.status_label(), "bootstrapping");
 }
