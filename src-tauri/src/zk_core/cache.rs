@@ -79,6 +79,10 @@ impl ConnectionCache {
             }
             self.nodes_by_path.insert(node.path.clone(), node);
         }
+
+        for child_paths in self.children_by_parent.values_mut() {
+            child_paths.sort();
+        }
     }
 
     pub fn to_snapshot(&self) -> TreeSnapshotDto {

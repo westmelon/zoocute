@@ -110,3 +110,17 @@ fn snapshot_can_export_bootstrapped_root_nodes() {
     assert_eq!(snapshot.status, "live");
     assert_eq!(snapshot.nodes.len(), 2);
 }
+
+#[test]
+fn replace_all_keeps_children_order_stable() {
+    let mut cache = ConnectionCache::new();
+    cache.replace_all(vec![
+        NodeRecord::new("/zookeeper", "zookeeper", Some("/".into()), true),
+        NodeRecord::new("/ssdev", "ssdev", Some("/".into()), true),
+    ]);
+
+    let root_children = cache.children_of("/");
+    assert_eq!(root_children.len(), 2);
+    assert_eq!(root_children[0].path, "/ssdev");
+    assert_eq!(root_children[1].path, "/zookeeper");
+}

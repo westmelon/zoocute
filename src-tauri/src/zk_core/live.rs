@@ -404,6 +404,7 @@ impl LiveAdapter {
             data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
             cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
         };
+        mark_cache_resyncing(&adapter.cache);
         adapter.bootstrap_subtree_cache();
         Ok((adapter, status))
     }
@@ -829,6 +830,11 @@ fn append_cache_error_log(
     });
 }
 
+fn mark_cache_resyncing(cache: &Arc<std::sync::Mutex<ConnectionCache>>) {
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.mark_resyncing();
+}
+
 fn collect_full_tree_records(client: &ZooKeeper) -> Result<Vec<NodeRecord>, String> {
     let mut nodes = Vec::new();
     let children = client.get_children("/", false).map_err(map_zk_error)?;
@@ -915,5 +921,14 @@ mod tests {
     #[test]
     fn leaves_non_no_node_errors_unclassified() {
         assert!(classify_missing_node_race("ConnectionLoss").is_none());
+    }
+
+    #[test]
+    fn mark_cache_resyncing_sets_transitional_status() {
+        let cache = Arc::new(std::sync::Mutex::new(ConnectionCache::new()));
+        mark_cache_resyncing(&cache);
+
+        let snapshot = cache.lock().unwrap_or_else(|e| e.into_inner()).to_snapshot();
+        assert_eq!(snapshot.status, "resyncing");
     }
 }
