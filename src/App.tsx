@@ -22,6 +22,7 @@ export default function App() {
     drafts,
     treeNodes, expandedPaths, loadingPaths,
     connectionError,
+    connectionNotice,
     saveError,
     openNode, toggleNode, ensureChildrenLoaded,
     pendingNavPath, confirmNavAndDiscard, cancelPendingNav,
@@ -31,7 +32,8 @@ export default function App() {
     exitEditMode,
     fetchServerValue,
     createNode, deleteNode,
-    submitConnection, disconnectSession,
+    submitConnection, testConnection, disconnectSession,
+    showConnectionNotice,
     savedConnections, setSavedConnections,
     selectedConnectionId, setSelectedConnectionId,
     searchQuery, setSearchQuery, searchResults, searchMode, locate, isIndexing,
@@ -63,6 +65,9 @@ export default function App() {
       />
       {connectionError && (
         <div className="error-toast">{connectionError}</div>
+      )}
+      {connectionNotice && (
+        <div className="success-toast">{connectionNotice}</div>
       )}
 
       <div className="left-panel" style={{ width: sidebarWidth }}>
@@ -117,6 +122,12 @@ export default function App() {
               })
             }
             onDisconnect={disconnectSession}
+            onDelete={(id) => {
+              setSavedConnections((prev) => prev.filter((x) => x.id !== id));
+              setSelectedConnectionId(
+                savedConnections.find((x) => x.id !== id)?.id ?? null
+              );
+            }}
           />
         )}
         {ribbonMode === "log" && (
@@ -169,24 +180,18 @@ export default function App() {
         {ribbonMode === "connections" && selectedConn && (
           <ConnectionDetail
             connection={selectedConn}
-            isConnected={sessions.has(selectedConn.id)}
-            onSave={(c) =>
-              setSavedConnections((prev) => prev.map((x) => (x.id === c.id ? c : x)))
-            }
+            onSave={(c) => {
+              setSavedConnections((prev) => prev.map((x) => (x.id === c.id ? c : x)));
+              showConnectionNotice("保存成功");
+            }}
             onTestConnect={(c) =>
-              submitConnection({
+              testConnection({
                 connectionString: c.connectionString,
                 username: c.username ?? "",
                 password: c.password ?? "",
                 connectionId: c.id,
               })
             }
-            onDelete={(id) => {
-              setSavedConnections((prev) => prev.filter((x) => x.id !== id));
-              setSelectedConnectionId(
-                savedConnections.find((x) => x.id !== id)?.id ?? null
-              );
-            }}
           />
         )}
 

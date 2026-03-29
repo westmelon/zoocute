@@ -163,6 +163,7 @@ export function useWorkbenchState() {
   >(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
@@ -372,6 +373,7 @@ export function useWorkbenchState() {
   }) {
     setIsConnecting(true);
     setConnectionError(null);
+    setConnectionNotice(null);
     try {
       await connectServer(params.connectionId, {
         connectionString: params.connectionString,
@@ -408,6 +410,40 @@ export function useWorkbenchState() {
     } finally {
       setIsConnecting(false);
     }
+  }
+
+  async function testConnection(params: {
+    connectionString: string;
+    username: string;
+    password: string;
+    connectionId: string;
+  }) {
+    setIsConnecting(true);
+    setConnectionError(null);
+    setConnectionNotice(null);
+    try {
+      await connectServer(params.connectionId, {
+        connectionString: params.connectionString,
+        username: params.username || undefined,
+        password: params.password || undefined,
+      });
+      setConnectionNotice("连接测试成功");
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : "连接测试失败");
+      return;
+    } finally {
+      try {
+        await disconnectServerCmd(params.connectionId);
+      } catch {
+        // best-effort cleanup for test-only connections
+      }
+      setIsConnecting(false);
+    }
+  }
+
+  function showConnectionNotice(message: string) {
+    setConnectionError(null);
+    setConnectionNotice(message);
   }
 
   async function disconnectSession(connectionId: string) {
@@ -738,6 +774,7 @@ export function useWorkbenchState() {
     selectedConnectionId,
     setSelectedConnectionId,
     connectionError,
+    connectionNotice,
     saveError,
     isConnecting,
     pendingNavPath,
@@ -758,7 +795,9 @@ export function useWorkbenchState() {
     exitEditMode,
     fetchServerValue,
     submitConnection,
+    testConnection,
     disconnectSession,
+    showConnectionNotice,
     searchQuery: nodeSearch.searchQuery,
     setSearchQuery: nodeSearch.setSearchQuery,
     searchResults: nodeSearch.searchResults,

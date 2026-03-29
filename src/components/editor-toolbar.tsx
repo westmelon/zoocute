@@ -14,7 +14,7 @@ interface EditorToolbarProps {
 }
 
 const VIEW_MODES: { value: ViewMode; label: string }[] = [
-  { value: "raw", label: "Raw" },
+  { value: "raw", label: "RAW" },
   { value: "json", label: "JSON" },
   { value: "xml", label: "XML" },
 ];
@@ -35,16 +35,20 @@ export function EditorToolbar({
 }: EditorToolbarProps) {
   return (
     <div className="editor-toolbar">
-      <div className="toolbar-view-tabs">
-        {VIEW_MODES.map((m) => (
-          <button
-            key={m.value}
-            type="button"
-            className={`toolbar-tab${viewMode === m.value ? " active" : ""}`}
-            onClick={() => onViewModeChange(m.value)}
-          >
-            {m.label}
-          </button>
+      <div className="toolbar-view-tabs" role="group" aria-label="查看模式">
+        {VIEW_MODES.map((m, index) => (
+          <div key={m.value} className="toolbar-view-segment">
+            <button
+              type="button"
+              className={`toolbar-tab${viewMode === m.value ? " active" : ""}`}
+              onClick={() => onViewModeChange(m.value)}
+              aria-pressed={viewMode === m.value}
+              disabled={isEditing}
+            >
+              {m.label}
+            </button>
+            {index < VIEW_MODES.length - 1 ? <span className="toolbar-view-divider" aria-hidden="true" /> : null}
+          </div>
         ))}
       </div>
 

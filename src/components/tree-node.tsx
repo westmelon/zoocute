@@ -24,6 +24,9 @@ export function TreeNode({
   const isExpanded = expandedPaths.has(node.path);
   const isLoading = loadingPaths.has(node.path);
   const canExpand = Boolean(node.hasChildren || node.children?.length);
+  const children = node.children ?? [];
+  const shouldShowChildren = isExpanded && children.length > 0;
+  const shouldShowSkeleton = isExpanded && isLoading;
 
   return (
     <li>
@@ -38,11 +41,13 @@ export function TreeNode({
         {canExpand ? (
           <button
             type="button"
-            className="tree-expand-icon"
+            className={`tree-expand-icon${isExpanded ? " tree-expand-icon--expanded" : ""}${
+              isLoading ? " tree-expand-icon--loading" : ""
+            }`}
             aria-label={`${isExpanded ? "收起" : "展开"} ${node.name}`}
             onClick={() => onToggle(node.path)}
           >
-            {isLoading ? "…" : isExpanded ? "▼" : "▶"}
+            <span className="tree-expand-glyph" aria-hidden="true" />
           </button>
         ) : (
           <span className="tree-expand-icon" aria-hidden="true" />
@@ -55,10 +60,23 @@ export function TreeNode({
           {node.name}
         </button>
       </div>
-      {isLoading ? <p className="tree-status">加载中...</p> : null}
-      {isExpanded && node.children?.length ? (
+      {shouldShowSkeleton ? (
+        <ul className="tree-list tree-list--loading" aria-hidden="true">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <li
+              key={`${node.path}-loading-${index}`}
+              className="tree-loading-row"
+              style={{ paddingLeft: `${(depth + 1) * 14 + 26}px` }}
+              data-testid="tree-loading-skeleton"
+            >
+              <span className="tree-loading-bar" />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {shouldShowChildren ? (
         <ul className="tree-list">
-          {node.children.map((child) => (
+          {children.map((child) => (
             <TreeNode
               key={child.path}
               node={child}
@@ -72,9 +90,6 @@ export function TreeNode({
             />
           ))}
         </ul>
-      ) : null}
-      {isExpanded && !isLoading && !node.children?.length && !node.hasChildren ? (
-        <p className="tree-status tree-status--empty">暂无子节点</p>
       ) : null}
     </li>
   );

@@ -19,9 +19,23 @@ const defaultProps = {
 
 it("shows view mode tabs always", () => {
   render(<EditorToolbar {...defaultProps} />);
-  expect(screen.getByRole("button", { name: "Raw" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "RAW" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "JSON" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "XML" })).toBeInTheDocument();
+});
+
+it("renders view mode controls as a segmented group with a pressed active option", () => {
+  render(<EditorToolbar {...defaultProps} viewMode="json" />);
+
+  const group = screen.getByRole("group", { name: "查看模式" });
+  expect(group).toHaveClass("toolbar-view-tabs");
+  expect(screen.getByRole("button", { name: "JSON" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "RAW" })).toHaveAttribute("aria-pressed", "false");
+});
+
+it("renders compact dividers between view mode options", () => {
+  const { container } = render(<EditorToolbar {...defaultProps} />);
+  expect(container.querySelectorAll(".toolbar-view-divider")).toHaveLength(2);
 });
 
 it("hides action buttons in view mode", () => {
@@ -66,6 +80,25 @@ it("calls onViewModeChange when tab clicked", async () => {
   render(<EditorToolbar {...defaultProps} onViewModeChange={onViewModeChange} />);
   await user.click(screen.getByRole("button", { name: "JSON" }));
   expect(onViewModeChange).toHaveBeenCalledWith("json");
+});
+
+it("disables view mode switching while editing", async () => {
+  const user = userEvent.setup();
+  const onViewModeChange = vi.fn();
+  render(
+    <EditorToolbar
+      {...defaultProps}
+      isEditing={true}
+      isDirty={true}
+      onViewModeChange={onViewModeChange}
+    />
+  );
+
+  const jsonButton = screen.getByRole("button", { name: "JSON" });
+  expect(jsonButton).toBeDisabled();
+
+  await user.click(jsonButton);
+  expect(onViewModeChange).not.toHaveBeenCalled();
 });
 
 it("calls onSave when save button clicked", async () => {

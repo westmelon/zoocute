@@ -85,6 +85,19 @@ body {
   border-radius: 6px;
   pointer-events: none;
 }
+.success-toast {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: var(--success);
+  color: #fff;
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  pointer-events: none;
+}
 
 /* ─── Ribbon ─────────────────────────────────────────── */
 .ribbon {
@@ -195,21 +208,36 @@ body {
   border-bottom: 1px solid var(--border);
   background: var(--bg-subtle);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   flex-shrink: 0;
   min-height: 38px;
 }
+.content-header-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.content-header-actions {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
 .node-path {
+  display: block;
   font-size: 12px;
   color: var(--text-secondary);
   font-family: ui-monospace, monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.45;
 }
 .unsaved-badge {
-  margin-left: auto;
   font-size: 11px;
   color: var(--danger);
   font-weight: 500;
+  padding-top: 3px;
 }
 
 /* ─── Mode Pill ──────────────────────────────────────── */
@@ -267,19 +295,57 @@ body {
   flex-shrink: 0;
 }
 .toolbar-tab {
-  font-size: 12px;
+  appearance: none;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 2px 0;
-  border-bottom: 2px solid transparent;
+  padding: 4px 9px;
+  min-width: 42px;
+  line-height: 1;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
 }
 .toolbar-tab.active {
   color: var(--accent);
-  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, white 88%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.toolbar-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+.toolbar-tab.active:disabled {
+  opacity: 0.72;
 }
 .toolbar-sep { flex: 1; }
 .toolbar-actions { display: flex; gap: 6px; }
-.toolbar-view-tabs { display: flex; gap: 2px; }
+.toolbar-view-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-inset);
+}
+.toolbar-view-segment {
+  display: inline-flex;
+  align-items: center;
+}
+.toolbar-view-divider {
+  width: 1px;
+  height: 12px;
+  margin: 0 2px;
+  background: var(--border-muted);
+  flex-shrink: 0;
+}
 
 .btn {
   border-radius: 5px;
@@ -338,6 +404,9 @@ body {
   margin: 0;
   padding: 0;
 }
+.tree-list--loading {
+  padding: 2px 0 6px;
+}
 .tree-list li {
   list-style: none;
 }
@@ -382,8 +451,11 @@ body {
   padding-left: 8px;
 }
 .tree-expand-icon {
-  font-size: 9px;
   width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
   color: var(--text-muted);
   background: none;
@@ -391,6 +463,22 @@ body {
   box-shadow: none;
   padding: 0;
   cursor: pointer;
+  transition: color 120ms ease, transform 160ms ease;
+}
+.tree-expand-glyph {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform 180ms ease;
+  transform-origin: 40% 50%;
+}
+.tree-expand-icon--expanded .tree-expand-glyph {
+  transform: rotate(90deg);
+}
+.tree-expand-icon--loading .tree-expand-glyph {
+  opacity: 0.72;
 }
 .tree-data-dot {
   font-size: 8px;
@@ -398,6 +486,35 @@ body {
   color: var(--success);
 }
 .tree-data-dot--empty { color: var(--text-muted); }
+.tree-loading-row {
+  height: 18px;
+  display: flex;
+  align-items: center;
+}
+.tree-loading-bar {
+  display: block;
+  height: 8px;
+  width: min(132px, calc(100% - 20px));
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(132, 149, 176, 0.14) 0%,
+      rgba(132, 149, 176, 0.32) 48%,
+      rgba(132, 149, 176, 0.14) 100%
+    );
+  background-size: 200% 100%;
+  animation: treeSkeletonShimmer 1.15s linear infinite;
+}
+
+@keyframes treeSkeletonShimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
 
 /* ─── Connection Badge ───────────────────────────────── */
 .conn-badge {
@@ -443,10 +560,22 @@ body {
   background: var(--accent-subtle);
 }
 .conn-server-icon {
-  font-size: 16px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
   color: var(--text-muted);
-  line-height: 1;
+}
+.conn-server-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.45;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .conn-server-icon--on { color: var(--success); }
 .conn-card-info {
@@ -472,21 +601,70 @@ body {
 }
 .conn-card-actions {
   display: flex;
-  gap: 2px;
+  gap: 4px;
   flex-shrink: 0;
 }
 .conn-icon-btn {
   background: none;
-  border: none;
+  border: 1px solid transparent;
   box-shadow: none;
-  padding: 2px 4px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   cursor: pointer;
-  font-size: 14px;
-  border-radius: 4px;
-  line-height: 1;
+  border-radius: 6px;
   opacity: 0.7;
+  color: var(--text-muted);
 }
-.conn-icon-btn:hover { opacity: 1; background: var(--bg-canvas); }
+.conn-icon-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.conn-icon-btn:hover {
+  opacity: 1;
+  background: var(--bg-canvas);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+.conn-icon-btn--danger:hover {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--border));
+  background: var(--danger-subtle);
+}
+.conn-tooltip-target {
+  position: relative;
+}
+.conn-floating-tooltip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: rgba(22, 28, 36, 0.92);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 20;
+}
+.conn-floating-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(100% - 1px);
+  width: 6px;
+  height: 6px;
+  background: rgba(22, 28, 36, 0.92);
+  transform: translateX(-50%) rotate(45deg);
+}
 
 /* ─── Connection Form ────────────────────────────────── */
 .conn-form {
@@ -694,7 +872,6 @@ body {
 
 /* ─── Edit Toggle ────────────────────────────────────── */
 .edit-toggle {
-  margin-left: 8px;
   padding: 2px 10px;
   font-size: 11px;
   font-weight: 500;

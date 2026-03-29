@@ -42,6 +42,27 @@ it("shows path and mode pill", () => {
   expect(screen.getByText("文本 · 可编辑")).toBeInTheDocument();
 });
 
+it("wraps long paths without moving action controls into the text flow", () => {
+  const longPath =
+    "/very/long/path/that/should/wrap/inside/the/header/without/pushing/the/mode/pill/or/edit/button/offscreen";
+  const { container } = render(
+    <NodeHeader
+      node={makeNode({ path: longPath })}
+      isEditing={false}
+      isDirty={true}
+      onEnterEdit={vi.fn()}
+      onExitEdit={vi.fn()}
+    />
+  );
+
+  expect(screen.getByText(longPath)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "开启编辑" })).toBeInTheDocument();
+  expect(screen.getByText("文本 · 可编辑")).toBeInTheDocument();
+  expect(screen.getByText("未保存")).toBeInTheDocument();
+  expect(container.querySelector(".content-header-main")).not.toBeNull();
+  expect(container.querySelector(".content-header-actions")).not.toBeNull();
+});
+
 it("shows edit toggle for editable nodes", () => {
   render(
     <NodeHeader

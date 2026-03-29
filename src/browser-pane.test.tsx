@@ -44,4 +44,44 @@ describe("BrowserPane", () => {
     fireEvent.contextMenu(node);
     expect(defaultProps.onContextMenu).toHaveBeenCalled();
   });
+
+  it("does not render empty-state copy when an expanded node has no children", () => {
+    render(
+      <BrowserPane
+        {...defaultProps}
+        treeNodes={[{ path: "/empty", name: "empty", hasChildren: false, children: [] }]}
+        expandedPaths={new Set(["/empty"])}
+      />
+    );
+
+    expect(screen.queryByText("暂无子节点")).not.toBeInTheDocument();
+  });
+
+  it("uses skeleton rows instead of loading text while children are loading", () => {
+    render(
+      <BrowserPane
+        {...defaultProps}
+        treeNodes={[{ path: "/loading", name: "loading", hasChildren: true }]}
+        expandedPaths={new Set(["/loading"])}
+        loadingPaths={new Set(["/loading"])}
+      />
+    );
+
+    expect(screen.queryByText("加载中...")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("tree-loading-skeleton")).toHaveLength(3);
+  });
+
+  it("renders root nodes inside a tree list container", () => {
+    const { container } = render(<BrowserPane {...defaultProps} />);
+    const treeRoot = container.querySelector(".tree-list");
+    expect(treeRoot).not.toBeNull();
+    expect(treeRoot?.querySelectorAll(":scope > li").length).toBeGreaterThan(0);
+  });
+
+  it("renders expand controls without text glyph jitter", () => {
+    render(<BrowserPane {...defaultProps} />);
+    const expandButton = screen.getByLabelText("展开 configs");
+    expect(expandButton.textContent).toBe("");
+    expect(expandButton.querySelector(".tree-expand-glyph")).not.toBeNull();
+  });
 });

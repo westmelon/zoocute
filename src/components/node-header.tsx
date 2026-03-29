@@ -40,22 +40,26 @@ export function NodeHeader({ node, isEditing, isDirty, onEnterEdit, onExitEdit }
 
   return (
     <div className="content-header">
-      <span className="node-path">{node.path}</span>
-      <span className={pillClass}>{node.displayModeLabel}</span>
+      <div className="content-header-main">
+        <span className="node-path">{node.path}</span>
+      </div>
+      <div className="content-header-actions">
+        <span className={pillClass}>{node.displayModeLabel}</span>
 
-      {canToggleEdit && (
-        <button
-          type="button"
-          className={`edit-toggle${isEditing ? " edit-toggle--active" : ""}`}
-          onClick={handleToggle}
-          aria-label={isEditing ? "退出编辑" : "开启编辑"}
-          aria-pressed={isEditing}
-        >
-          {isEditing ? "编辑中" : "开启编辑"}
-        </button>
-      )}
+        {canToggleEdit && (
+          <button
+            type="button"
+            className={`edit-toggle${isEditing ? " edit-toggle--active" : ""}`}
+            onClick={handleToggle}
+            aria-label={isEditing ? "退出编辑" : "开启编辑"}
+            aria-pressed={isEditing}
+          >
+            {isEditing ? "编辑中" : "开启编辑"}
+          </button>
+        )}
 
-      {isDirty && <span className="unsaved-badge">未保存</span>}
+        {isDirty && <span className="unsaved-badge">未保存</span>}
+      </div>
 
       {showCautiousWarning && (
         <div className="dialog-backdrop">

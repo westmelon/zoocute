@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { ConnectionPane, ConnectionDetail } from "./components/connection-pane";
@@ -10,7 +10,16 @@ const connections: SavedConnection[] = [
 ];
 
 describe("ConnectionPane", () => {
-  const baseProps = { connections, selectedId: null, connectedId: null, onSelect: vi.fn(), onNew: vi.fn(), onConnect: vi.fn(), onDisconnect: vi.fn() };
+  const baseProps = {
+    connections,
+    selectedId: null,
+    connectedId: null,
+    onSelect: vi.fn(),
+    onNew: vi.fn(),
+    onConnect: vi.fn(),
+    onDisconnect: vi.fn(),
+    onDelete: vi.fn(),
+  };
 
   it("renders connection cards", () => {
     render(<ConnectionPane {...baseProps} />);
@@ -23,6 +32,50 @@ describe("ConnectionPane", () => {
     const selected = container.querySelector(".conn-card.selected");
     expect(selected).not.toBeNull();
     expect(selected?.textContent).toContain("本地开发");
+  });
+
+  it("always shows connection status icons for every row", () => {
+    const { container } = render(<ConnectionPane {...baseProps} selectedId={null} />);
+    expect(container.querySelectorAll(".conn-server-icon")).toHaveLength(connections.length);
+  });
+
+  it("shows delete action only for disconnected rows", () => {
+    render(<ConnectionPane {...baseProps} selectedId={null} connectedId="1" />);
+    expect(screen.queryByLabelText("删除 本地开发")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("删除 测试环境")).toBeInTheDocument();
+  });
+
+  it("renders status and action icons with the shared connection icon treatment", () => {
+    const { container } = render(<ConnectionPane {...baseProps} selectedId={null} connectedId="1" />);
+    expect(container.querySelectorAll(".conn-server-icon svg")).toHaveLength(connections.length);
+    expect(container.querySelectorAll(".conn-icon-btn svg")).toHaveLength(3);
+  });
+
+  it("uses custom tooltip attributes instead of native title tooltips", () => {
+    render(<ConnectionPane {...baseProps} selectedId={null} connectedId="1" />);
+
+    const disconnect = screen.getByLabelText("断开 本地开发");
+    const remove = screen.getByLabelText("删除 测试环境");
+
+    expect(disconnect).not.toHaveAttribute("title");
+    expect(remove).not.toHaveAttribute("title");
+    expect(disconnect).toHaveAttribute("aria-label", "断开 本地开发");
+    expect(remove).toHaveAttribute("aria-label", "删除 测试环境");
+  });
+
+  it("shows a floating tooltip after a short hover delay", async () => {
+    vi.useFakeTimers();
+    render(<ConnectionPane {...baseProps} selectedId={null} connectedId="1" />);
+
+    const disconnect = screen.getByLabelText("断开 本地开发");
+    fireEvent.mouseEnter(disconnect);
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(screen.getByRole("tooltip")).toHaveTextContent("断开 本地开发");
+    vi.useRealTimers();
   });
 
   it("calls onNew when + 新建 is clicked", () => {
@@ -38,10 +91,8 @@ describe("ConnectionDetail", () => {
     render(
       <ConnectionDetail
         connection={{ id: "new", name: "", connectionString: "", timeoutMs: 5000 }}
-        isConnected={false}
         onSave={vi.fn()}
         onTestConnect={vi.fn()}
-        onDelete={vi.fn()}
       />
     );
     fireEvent.click(screen.getByText("测试连接"));

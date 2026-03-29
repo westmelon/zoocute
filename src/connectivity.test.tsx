@@ -3,13 +3,19 @@ import { beforeEach, describe, it, expect, vi } from "vitest";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
 import type { SavedConnection } from "./lib/types";
 
-const { connectServerMock, listChildrenMock, getNodeDetailsMock } = vi.hoisted(() => ({
+const {
+  connectServerMock,
+  disconnectServerMock,
+  listChildrenMock,
+  getNodeDetailsMock,
+} = vi.hoisted(() => ({
   connectServerMock: vi.fn(async () => ({
     connected: true,
     authMode: "digest",
     authSucceeded: true,
     message: "connected to 127.0.0.1:2181",
   })),
+  disconnectServerMock: vi.fn(async () => {}),
   listChildrenMock: vi.fn(async (_connectionId: string, path: string) => {
     if (path === "/") {
       return [{ path: "/services", name: "services", hasChildren: true }];
@@ -45,7 +51,7 @@ const { connectServerMock, listChildrenMock, getNodeDetailsMock } = vi.hoisted((
 
 vi.mock("./lib/commands", () => ({
   connectServer: connectServerMock,
-  disconnectServer: vi.fn(async () => {}),
+  disconnectServer: disconnectServerMock,
   listChildren: listChildrenMock,
   getNodeDetails: getNodeDetailsMock,
   saveNode: vi.fn(async () => {}),
@@ -111,6 +117,33 @@ describe("submitConnection", () => {
 
     expect(result.current.hasActiveSessions).toBe(false);
     expect(result.current.connectionError).toBe("refused");
+  });
+});
+
+describe("testConnection", () => {
+  it("checks connectivity without creating a session or switching to browse mode", async () => {
+    const { result } = renderHook(() => useWorkbenchState());
+
+    await act(async () => {
+      await result.current.testConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "",
+        password: "",
+      });
+    });
+
+    expect(connectServerMock).toHaveBeenCalledWith("local", {
+      connectionString: "127.0.0.1:2181",
+      username: undefined,
+      password: undefined,
+    });
+    expect(disconnectServerMock).toHaveBeenCalledWith("local");
+    expect(result.current.hasActiveSessions).toBe(false);
+    expect(result.current.activeTabId).toBe(null);
+    expect(result.current.ribbonMode).toBe("connections");
+    expect(result.current.connectionError).toBe(null);
+    expect(result.current.connectionNotice).toBe("连接测试成功");
   });
 });
 

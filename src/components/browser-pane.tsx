@@ -68,19 +68,21 @@ export function BrowserPane({
       ) : (
         <div ref={treeRef} style={{ display: "contents" }}>
           <ScrollArea className="tree-scroll">
-            {treeNodes.map((node) => (
-              <TreeNode
-                key={node.path}
-                node={node}
-                activePath={activePath}
-                depth={0}
-                expandedPaths={expandedPaths}
-                loadingPaths={loadingPaths}
-                onSelect={onSelectPath}
-                onToggle={onTogglePath}
-                onContextMenu={onContextMenu}
-              />
-            ))}
+            <ul className="tree-list">
+              {treeNodes.map((node) => (
+                <TreeNode
+                  key={node.path}
+                  node={node}
+                  activePath={activePath}
+                  depth={0}
+                  expandedPaths={expandedPaths}
+                  loadingPaths={loadingPaths}
+                  onSelect={onSelectPath}
+                  onToggle={onTogglePath}
+                  onContextMenu={onContextMenu}
+                />
+              ))}
+            </ul>
           </ScrollArea>
         </div>
       )}
