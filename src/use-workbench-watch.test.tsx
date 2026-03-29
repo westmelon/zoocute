@@ -5,11 +5,10 @@ import {
   RECENT_LEAF_PROBE_WINDOW_MS,
   useWorkbenchState,
 } from "./hooks/use-workbench-state";
-import type { SavedConnection, WatchEvent } from "./lib/types";
+import type { CacheEvent, NodeTreeItem, SavedConnection, WatchEvent } from "./lib/types";
 
-type WebviewHandler = (event: {
-  payload: { connectionId: string; eventType: string; path: string };
-}) => void;
+type WatchHandler = (event: { payload: WatchEvent }) => void;
+type CacheHandler = (event: { payload: CacheEvent }) => void;
 
 const {
   listChildrenMock,
@@ -19,9 +18,42 @@ const {
   webviewListenMock,
   unlistenMock,
   emitWatchEvent,
+  emitCacheEvent,
 } = vi.hoisted(() => {
   const unlistenMock = vi.fn();
-  const handlers = new Map<string, WebviewHandler>();
+  const handlers = new Map<string, unknown>();
+  let treeSnapshot = {
+    status: "live" as const,
+    nodes: [{ path: "/configs", name: "configs", parentPath: "/", hasChildren: true }],
+  };
+
+  function applyCacheEvent(payload: {
+    eventType: string;
+    parentPath: string | null;
+    paths: string[];
+  }) {
+    if (payload.eventType !== "nodes_added") return;
+    if (payload.parentPath !== "/ssdev/services") return;
+
+    treeSnapshot = {
+      ...treeSnapshot,
+      nodes: [
+        { path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true },
+        {
+          path: "/ssdev/services",
+          name: "services",
+          parentPath: "/ssdev",
+          hasChildren: true,
+        },
+        {
+          path: "/ssdev/services/bbp",
+          name: "bbp",
+          parentPath: "/ssdev/services",
+          hasChildren: false,
+        },
+      ],
+    };
+  }
 
   return {
     listChildrenMock: vi.fn(async (_connectionId: string, path: string) => {
@@ -53,22 +85,40 @@ const {
       dataLength: 8,
       ephemeral: false,
     })),
-    getTreeSnapshotMock: vi.fn(async () => ({
-      status: "live",
-      nodes: [{ path: "/configs", name: "configs", parentPath: "/", hasChildren: true }],
-    })),
+    getTreeSnapshotMock: vi.fn(async () => treeSnapshot),
     loadFullTreeMock: vi.fn(async () => []),
-    webviewListenMock: vi.fn(async (_eventName: string, cb: WebviewHandler) => {
+    webviewListenMock: vi.fn(async (_eventName: string, cb: WatchHandler | CacheHandler) => {
       handlers.set(_eventName, cb);
       return unlistenMock;
     }),
     unlistenMock,
     emitWatchEvent: async (payload: WatchEvent) => {
-      handlers.get("zk-watch-event")?.({ payload });
+      (handlers.get("zk-watch-event") as WatchHandler | undefined)?.({ payload });
+      await Promise.resolve();
+    },
+    emitCacheEvent: async (payload: {
+      connectionId: string;
+      eventType: string;
+      parentPath: string | null;
+      paths: string[];
+    }) => {
+      applyCacheEvent(payload);
+      (handlers.get("zk-cache-event") as CacheHandler | undefined)?.({
+        payload: payload as CacheEvent,
+      });
       await Promise.resolve();
     },
   };
 });
+
+function findTreeNode(nodes: NodeTreeItem[], targetPath: string): NodeTreeItem | undefined {
+  for (const node of nodes) {
+    if (node.path === targetPath) return node;
+    const found = node.children ? findTreeNode(node.children, targetPath) : undefined;
+    if (found) return found;
+  }
+  return undefined;
+}
 
 vi.mock("./lib/commands", () => ({
   connectServer: vi.fn(async () => ({
@@ -165,6 +215,24 @@ describe("watch events", () => {
 
     await waitFor(() => {
       expect(result.current.searchResults.map((node) => node.path)).toContain("/configs/feature-b");
+    });
+  });
+
+  it("shows nodes added under an unexpanded parent after cache delta arrives", async () => {
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitCacheEvent({
+        connectionId: "c1",
+        eventType: "nodes_added",
+        parentPath: "/ssdev/services",
+        paths: ["/ssdev/services/bbp"],
+      });
+    });
+
+    await waitFor(() => {
+      const services = findTreeNode(result.current.treeNodes, "/ssdev/services");
+      expect(services?.children?.some((n) => n.path === "/ssdev/services/bbp")).toBe(true);
     });
   });
 

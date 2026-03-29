@@ -3,6 +3,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { usePersistedConnections } from "./use-persisted-connections";
 import { useSessionManager } from "./use-session-manager";
 import { useNodeSearch } from "./use-node-search";
+import { buildProjectedTree } from "./use-tree-projection";
 import {
   connectServer,
   disconnectServer as disconnectServerCmd,
@@ -171,6 +172,9 @@ export function useWorkbenchState() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
   const [indexingConnections, setIndexingConnections] = useState<Set<string>>(new Set());
+  const [cacheProjectionReadyConnections, setCacheProjectionReadyConnections] = useState<Set<string>>(
+    new Set()
+  );
 
   // Force connections mode when all sessions are closed
   useEffect(() => {
@@ -379,6 +383,7 @@ export function useWorkbenchState() {
       void getTreeSnapshot(connectionId)
         .then((snapshot) => {
           cacheSnapshotsRef.current.set(connectionId, snapshot);
+          setCacheProjectionReadyConnections((prev) => new Set(prev).add(connectionId));
         })
         .catch(() => {
           // snapshot failure should not block existing tree flow
@@ -491,6 +496,11 @@ export function useWorkbenchState() {
     cacheUnlistenRefs.current.get(connectionId)?.();
     cacheUnlistenRefs.current.delete(connectionId);
     cacheSnapshotsRef.current.delete(connectionId);
+    setCacheProjectionReadyConnections((prev) => {
+      const next = new Set(prev);
+      next.delete(connectionId);
+      return next;
+    });
     pendingChildRefreshRefs.current.delete(connectionId);
     pendingProbeRefs.current.delete(connectionId);
     recentLeafProbeRefs.current.delete(connectionId);
@@ -786,7 +796,10 @@ export function useWorkbenchState() {
   }
 
   // Derive current session's state for App.tsx consumption
-  const treeNodes = activeSession?.treeNodes ?? [];
+  const cachedSnapshot = activeTabId ? cacheSnapshotsRef.current.get(activeTabId) ?? null : null;
+  const treeNodes = activeTabId && cachedSnapshot && cacheProjectionReadyConnections.has(activeTabId)
+    ? buildProjectedTree(cachedSnapshot, activeSession?.expandedPaths ?? new Set<string>())
+    : activeSession?.treeNodes ?? [];
   const expandedPaths = activeSession?.expandedPaths ?? new Set<string>();
   const loadingPaths = activeSession?.loadingPaths ?? new Set<string>();
   const activePath = activeSession?.activePath ?? null;
