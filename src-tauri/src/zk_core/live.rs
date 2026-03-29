@@ -102,16 +102,31 @@ impl Watcher for ChildrenWatcher {
                         None,
                         None,
                     ),
-                    Err(error) => append_watch_log(
-                        &watcher.log_store,
-                        &watcher.connection_id,
-                        "watch_reregister_children",
-                        &watcher.path,
-                        false,
-                        "failed to re-register children watch".into(),
-                        None,
-                        Some(error),
-                    ),
+                    Err(error) => {
+                        if let Some((message, meta)) = classify_missing_node_race(&error) {
+                            append_watch_log(
+                                &watcher.log_store,
+                                &watcher.connection_id,
+                                "watch_reregister_children",
+                                &watcher.path,
+                                true,
+                                message,
+                                Some(meta),
+                                None,
+                            );
+                        } else {
+                            append_watch_log(
+                                &watcher.log_store,
+                                &watcher.connection_id,
+                                "watch_reregister_children",
+                                &watcher.path,
+                                false,
+                                "failed to re-register children watch".into(),
+                                None,
+                                Some(error),
+                            );
+                        }
+                    }
                 }
             });
         }
@@ -232,6 +247,17 @@ fn append_watch_log(
         error,
         meta,
     });
+}
+
+fn classify_missing_node_race(error: &str) -> Option<(String, serde_json::Value)> {
+    if error.contains("NoNode") || error.contains("no node") {
+        Some((
+            "target disappeared before follow-up operation".into(),
+            serde_json::json!({ "benignRace": true, "reason": "NoNode" }),
+        ))
+    } else {
+        None
+    }
 }
 
 fn should_register_watch(
@@ -581,24 +607,42 @@ impl ReadOnlyZkAdapter for LiveAdapter {
         let result = self.do_list_children(path);
         let duration_ms = start.elapsed().as_millis() as u64;
         let ok = result.is_ok();
+        let benign_missing = result
+            .as_ref()
+            .err()
+            .and_then(|error| classify_missing_node_race(error));
         self.log_store.append(&ZkLogEntry {
             timestamp: now_millis(),
-            level: if ok { "DEBUG".into() } else { "ERROR".into() },
+            level: if ok || benign_missing.is_some() {
+                "DEBUG".into()
+            } else {
+                "ERROR".into()
+            },
             connection_id: Some(self.connection_id.clone()),
             operation: "list_children".into(),
             path: Some(path.to_string()),
-            success: ok,
+            success: ok || benign_missing.is_some(),
             duration_ms,
             message: if ok {
                 "list_children succeeded".into()
+            } else if let Some((message, _)) = benign_missing.as_ref() {
+                message.clone()
             } else {
                 "list_children failed".into()
             },
-            error: result.as_ref().err().cloned(),
-            meta: result
-                .as_ref()
-                .ok()
-                .map(|v| serde_json::json!({ "childrenCount": v.len() })),
+            error: if benign_missing.is_some() {
+                None
+            } else {
+                result.as_ref().err().cloned()
+            },
+            meta: if let Some((_, meta)) = benign_missing {
+                Some(meta)
+            } else {
+                result
+                    .as_ref()
+                    .ok()
+                    .map(|v| serde_json::json!({ "childrenCount": v.len() }))
+            },
         });
         result
     }
@@ -742,5 +786,20 @@ mod tests {
             map_data_watch_event(WatchedEventType::NodeChildrenChanged),
             None
         );
+    }
+
+    #[test]
+    fn classifies_no_node_as_benign_missing_node_race() {
+        let classified = classify_missing_node_race("NoNode");
+        assert!(classified.is_some());
+        let (message, meta) = classified.expect("classified");
+        assert_eq!(message, "target disappeared before follow-up operation");
+        assert_eq!(meta["benignRace"], true);
+        assert_eq!(meta["reason"], "NoNode");
+    }
+
+    #[test]
+    fn leaves_non_no_node_errors_unclassified() {
+        assert!(classify_missing_node_race("ConnectionLoss").is_none());
     }
 }
