@@ -37,6 +37,8 @@ function findNode(nodes: NodeTreeItem[], targetPath: string): NodeTreeItem | und
   return undefined;
 }
 
+/** Used by `locate` which builds a working tree snapshot directly.
+ *  `ensureChildrenLoaded` uses replaceChildren + patchNodeMeta instead. */
 function mergeChildren(
   nodes: NodeTreeItem[],
   targetPath: string,
@@ -49,6 +51,36 @@ function mergeChildren(
     }
     if (!node.children?.length) return node;
     return { ...node, children: mergeChildren(node.children, targetPath, children) };
+  });
+}
+
+function replaceChildren(
+  nodes: NodeTreeItem[],
+  parentPath: string,
+  children: NodeTreeItem[]
+): NodeTreeItem[] {
+  // Like mergeChildren but does NOT modify hasChildren — that's patchNodeMeta's job
+  if (parentPath === "/") return children;
+  return nodes.map((node) => {
+    if (node.path === parentPath) {
+      return { ...node, children };
+    }
+    if (!node.children?.length) return node;
+    return { ...node, children: replaceChildren(node.children, parentPath, children) };
+  });
+}
+
+function patchNodeMeta(
+  nodes: NodeTreeItem[],
+  targetPath: string,
+  patch: Partial<Pick<NodeTreeItem, "hasChildren">>
+): NodeTreeItem[] {
+  return nodes.map((node) => {
+    if (node.path === targetPath) {
+      return { ...node, ...patch };
+    }
+    if (!node.children?.length) return node;
+    return { ...node, children: patchNodeMeta(node.children, targetPath, patch) };
   });
 }
 
@@ -234,15 +266,22 @@ export function useWorkbenchState() {
 
     try {
       const children = await listChildren(connectionId, path);
-      updateSession(connectionId, (s) => ({
-        ...s,
-        treeNodes: path === "/" ? children : mergeChildren(s.treeNodes, path, children),
-        loadingPaths: (() => {
-          const next = new Set(s.loadingPaths);
-          next.delete(path);
-          return next;
-        })(),
-      }));
+      updateSession(connectionId, (s) => {
+        const newTree = replaceChildren(s.treeNodes, path, children);
+        const patchedTree =
+          path === "/"
+            ? newTree
+            : patchNodeMeta(newTree, path, { hasChildren: children.length > 0 });
+        return {
+          ...s,
+          treeNodes: patchedTree,
+          loadingPaths: (() => {
+            const next = new Set(s.loadingPaths);
+            next.delete(path);
+            return next;
+          })(),
+        };
+      });
       nodeSearch.indexNodes(connectionId, path, children);
     } catch (error) {
       updateSession(connectionId, (s) => ({

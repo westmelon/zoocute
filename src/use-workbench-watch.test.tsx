@@ -195,6 +195,63 @@ describe("watch events", () => {
     });
   });
 
+  it("marks a newly recreated node as expandable after parent refresh without requiring openNode", async () => {
+    let phase = 0;
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/services", name: "services", hasChildren: true }];
+      }
+      if (path === "/services") {
+        if (phase === 0) {
+          phase = 1;
+          return [];
+        }
+        return [{ path: "/services/bbp", name: "bbp", hasChildren: false }];
+      }
+      return [];
+    });
+
+    getNodeDetailsMock.mockResolvedValue({
+      path: "/services/bbp",
+      value: "v1",
+      dataKind: "text",
+      displayModeLabel: "文本 · 可编辑",
+      editable: true,
+      rawPreview: "",
+      decodedPreview: "",
+      version: 1,
+      childrenCount: 2,
+      updatedAt: "",
+      cVersion: 0,
+      aclVersion: 0,
+      cZxid: null,
+      mZxid: null,
+      cTime: 0,
+      mTime: 0,
+      ephemeral: false,
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await result.current.ensureChildrenLoaded("/services");
+    });
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/services",
+      });
+    });
+
+    await waitFor(() => {
+      const services = result.current.treeNodes.find((node) => node.path === "/services");
+      const bbp = services?.children?.find((node) => node.path === "/services/bbp");
+      expect(bbp?.hasChildren).toBe(true);
+    });
+  });
+
   it("removes a deleted node, clears the active panel, and refreshes the parent", async () => {
     const { result } = await connectAndGet();
 
