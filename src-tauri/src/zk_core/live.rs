@@ -35,6 +35,7 @@ struct ChildrenWatcher {
     path: String,
     log_store: Arc<ZkLogStore>,
     active_paths: Arc<std::sync::Mutex<HashSet<String>>>,
+    cache: Arc<std::sync::Mutex<ConnectionCache>>,
 }
 
 #[derive(Clone)]
@@ -78,47 +79,31 @@ impl Watcher for ChildrenWatcher {
             event_type,
             &self.path,
         );
-        if let Some(cache_event_type) = match event_type {
-            "children_changed" => Some("nodes_added"),
-            "node_deleted" => Some("nodes_removed"),
-            _ => None,
-        } {
-            let (parent_path, paths): (Option<String>, Vec<String>) =
-                if cache_event_type == "nodes_removed" {
-                    let parent_path = self.path.rsplit_once('/').map(|(parent, _)| {
-                        if parent.is_empty() {
-                            "/".to_string()
-                        } else {
-                            parent.to_string()
-                        }
-                    });
-                    (parent_path, vec![self.path.clone()])
-                } else {
-                    let paths = self
-                        .client
-                        .get_children(&self.path, false)
-                        .map(|children| {
-                            children
-                                .into_iter()
-                                .map(|child| {
-                                    if self.path == "/" {
-                                        format!("/{child}")
-                                    } else {
-                                        format!("{}/{}", self.path, child)
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_else(|_| vec![self.path.clone()]);
-                    (Some(self.path.clone()), paths)
+        if event_type == "children_changed" {
+            if let Ok(current_child_paths) = current_child_paths(&self.client, &self.path) {
+                let delta = {
+                    let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                    diff_cache_children(&cache, &self.path, &current_child_paths)
                 };
-            emit_cache_event(
-                &self.app_handle,
-                &self.connection_id,
-                cache_event_type,
-                parent_path.as_deref(),
-                paths,
-            );
+                if !delta.added.is_empty() {
+                    emit_cache_event(
+                        &self.app_handle,
+                        &self.connection_id,
+                        "nodes_added",
+                        Some(&self.path),
+                        delta.added,
+                    );
+                }
+                if !delta.removed.is_empty() {
+                    emit_cache_event(
+                        &self.app_handle,
+                        &self.connection_id,
+                        "nodes_removed",
+                        Some(&self.path),
+                        delta.removed,
+                    );
+                }
+            }
         }
         append_watch_log(
             &self.log_store,
@@ -288,6 +273,15 @@ fn emit_cache_event(
             paths,
         },
     );
+}
+
+fn snapshot_ready_cache_event(connection_id: &str) -> CacheEventDto {
+    CacheEventDto {
+        connection_id: connection_id.to_string(),
+        event_type: "snapshot_ready".to_string(),
+        parent_path: None,
+        paths: Vec::new(),
+    }
 }
 
 fn append_watch_log(
@@ -483,7 +477,6 @@ impl LiveAdapter {
             append_cache_log(&log_store, &connection_id, "cache_bootstrap_started", "/");
             match collect_full_tree_records(client.as_ref()) {
                 Ok(nodes) => {
-                    let snapshot_paths = nodes.iter().map(|node| node.path.clone()).collect();
                     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
                     guard.replace_all(nodes);
                     guard.mark_live();
@@ -493,12 +486,13 @@ impl LiveAdapter {
                         "cache_bootstrap_completed",
                         "/",
                     );
+                    let event = snapshot_ready_cache_event(&connection_id);
                     emit_cache_event(
                         &app_handle,
                         &connection_id,
-                        "snapshot_ready",
-                        None,
-                        snapshot_paths,
+                        &event.event_type,
+                        event.parent_path.as_deref(),
+                        event.paths,
                     );
                 }
                 Err(error) => {
@@ -795,6 +789,7 @@ impl LiveAdapter {
             path: path.to_string(),
             log_store: Arc::clone(&self.log_store),
             active_paths: Arc::clone(&self.children_watch_paths),
+            cache: Arc::clone(&self.cache),
         };
         let children = register_children_watch(&watcher)?;
         children
@@ -938,6 +933,55 @@ fn collect_node_records(
     Ok(())
 }
 
+fn current_child_paths(client: &ZooKeeper, parent_path: &str) -> Result<Vec<String>, String> {
+    let children = client.get_children(parent_path, false).map_err(map_zk_error)?;
+    Ok(children
+        .into_iter()
+        .map(|child| {
+            if parent_path == "/" {
+                format!("/{child}")
+            } else {
+                format!("{parent_path}/{child}")
+            }
+        })
+        .collect())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CacheChildDelta {
+    added: Vec<String>,
+    removed: Vec<String>,
+}
+
+fn diff_cache_children(
+    cache: &ConnectionCache,
+    parent_path: &str,
+    current_child_paths: &[String],
+) -> CacheChildDelta {
+    let previous_child_paths = cache
+        .children_of(parent_path)
+        .into_iter()
+        .map(|node| node.path)
+        .collect::<std::collections::HashSet<_>>();
+    let current_child_paths = current_child_paths
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+
+    let mut added = current_child_paths
+        .difference(&previous_child_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut removed = previous_child_paths
+        .difference(&current_child_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    added.sort();
+    removed.sort();
+
+    CacheChildDelta { added, removed }
+}
+
 fn map_cache_event_type(event_type: &str) -> Option<&'static str> {
     match event_type {
         "snapshot_ready" => Some("snapshot_ready"),
@@ -1020,5 +1064,36 @@ mod tests {
         assert_eq!(map_cache_event_type("snapshot_ready"), Some("snapshot_ready"));
         assert_eq!(map_cache_event_type("nodes_added"), Some("nodes_added"));
         assert_eq!(map_cache_event_type("nodes_removed"), Some("nodes_removed"));
+    }
+
+    #[test]
+    fn cache_children_are_diffed_against_the_existing_subtree_cache() {
+        let mut cache = ConnectionCache::new();
+        cache.upsert_children(
+            "/",
+            vec![
+                NodeRecord::new("/old", "old", Some("/".into()), false),
+                NodeRecord::new("/stay", "stay", Some("/".into()), false),
+            ],
+        );
+
+        let delta = diff_cache_children(
+            &cache,
+            "/",
+            &vec!["/stay".to_string(), "/new".to_string()],
+        );
+
+        assert_eq!(delta.added, vec!["/new".to_string()]);
+        assert_eq!(delta.removed, vec!["/old".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_ready_cache_event_uses_empty_payload() {
+        let event = snapshot_ready_cache_event("conn-a");
+
+        assert_eq!(event.connection_id, "conn-a");
+        assert_eq!(event.event_type, "snapshot_ready");
+        assert_eq!(event.parent_path, None);
+        assert!(event.paths.is_empty());
     }
 }
