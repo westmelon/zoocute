@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Wry};
 use zookeeper::{Acl, CreateMode, WatchedEventType, Watcher, WatchedEvent, ZooKeeper};
 
 use crate::domain::{
-    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
+    CacheEventDto, ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
     TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
@@ -78,6 +78,48 @@ impl Watcher for ChildrenWatcher {
             event_type,
             &self.path,
         );
+        if let Some(cache_event_type) = match event_type {
+            "children_changed" => Some("nodes_added"),
+            "node_deleted" => Some("nodes_removed"),
+            _ => None,
+        } {
+            let (parent_path, paths): (Option<String>, Vec<String>) =
+                if cache_event_type == "nodes_removed" {
+                    let parent_path = self.path.rsplit_once('/').map(|(parent, _)| {
+                        if parent.is_empty() {
+                            "/".to_string()
+                        } else {
+                            parent.to_string()
+                        }
+                    });
+                    (parent_path, vec![self.path.clone()])
+                } else {
+                    let paths = self
+                        .client
+                        .get_children(&self.path, false)
+                        .map(|children| {
+                            children
+                                .into_iter()
+                                .map(|child| {
+                                    if self.path == "/" {
+                                        format!("/{child}")
+                                    } else {
+                                        format!("{}/{}", self.path, child)
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_else(|_| vec![self.path.clone()]);
+                    (Some(self.path.clone()), paths)
+                };
+            emit_cache_event(
+                &self.app_handle,
+                &self.connection_id,
+                cache_event_type,
+                parent_path.as_deref(),
+                paths,
+            );
+        }
         append_watch_log(
             &self.log_store,
             &self.connection_id,
@@ -223,6 +265,27 @@ fn emit_watch_event(
             connection_id: connection_id.to_string(),
             event_type: event_type.to_string(),
             path: path.to_string(),
+        },
+    );
+}
+
+fn emit_cache_event(
+    app_handle: &AppHandle<Wry>,
+    connection_id: &str,
+    event_type: &str,
+    parent_path: Option<&str>,
+    paths: Vec<String>,
+) {
+    let Some(event_type) = map_cache_event_type(event_type) else {
+        return;
+    };
+    let _ = app_handle.emit(
+        "zk-cache-event",
+        CacheEventDto {
+            connection_id: connection_id.to_string(),
+            event_type: event_type.to_string(),
+            parent_path: parent_path.map(|path| path.to_string()),
+            paths,
         },
     );
 }
@@ -414,11 +477,13 @@ impl LiveAdapter {
         let cache = Arc::clone(&self.cache);
         let connection_id = self.connection_id.clone();
         let log_store = Arc::clone(&self.log_store);
+        let app_handle = self.app_handle.clone();
 
         std::thread::spawn(move || {
             append_cache_log(&log_store, &connection_id, "cache_bootstrap_started", "/");
             match collect_full_tree_records(client.as_ref()) {
                 Ok(nodes) => {
+                    let snapshot_paths = nodes.iter().map(|node| node.path.clone()).collect();
                     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
                     guard.replace_all(nodes);
                     guard.mark_live();
@@ -427,6 +492,13 @@ impl LiveAdapter {
                         &connection_id,
                         "cache_bootstrap_completed",
                         "/",
+                    );
+                    emit_cache_event(
+                        &app_handle,
+                        &connection_id,
+                        "snapshot_ready",
+                        None,
+                        snapshot_paths,
                     );
                 }
                 Err(error) => {
@@ -866,6 +938,17 @@ fn collect_node_records(
     Ok(())
 }
 
+fn map_cache_event_type(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "snapshot_ready" => Some("snapshot_ready"),
+        "nodes_added" => Some("nodes_added"),
+        "nodes_removed" => Some("nodes_removed"),
+        "nodes_updated" => Some("nodes_updated"),
+        "resync_completed" => Some("resync_completed"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -930,5 +1013,12 @@ mod tests {
 
         let snapshot = cache.lock().unwrap_or_else(|e| e.into_inner()).to_snapshot();
         assert_eq!(snapshot.status, "resyncing");
+    }
+
+    #[test]
+    fn cache_event_types_are_exposed_for_frontend_projection() {
+        assert_eq!(map_cache_event_type("snapshot_ready"), Some("snapshot_ready"));
+        assert_eq!(map_cache_event_type("nodes_added"), Some("nodes_added"));
+        assert_eq!(map_cache_event_type("nodes_removed"), Some("nodes_removed"));
     }
 }

@@ -127,6 +127,13 @@ export interface WatchEvent {
   path: string;
 }
 
+export interface CacheEvent {
+  connectionId: string;
+  eventType: "snapshot_ready" | "nodes_added" | "nodes_removed" | "nodes_updated" | "resync_completed";
+  parentPath: string | null;
+  paths: string[];
+}
+
 export interface ActiveSession {
   connection: SavedConnection;
   treeNodes: NodeTreeItem[];
