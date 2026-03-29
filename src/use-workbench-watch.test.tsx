@@ -295,6 +295,48 @@ describe("watch events", () => {
     });
   });
 
+  it("replaces a resyncing snapshot with a newer live snapshot even when node counts match", async () => {
+    const { result } = await connectAndGet();
+
+    expect(result.current.cacheStatus).toBe("live");
+
+    getTreeSnapshotMock.mockResolvedValueOnce({
+      status: "resyncing",
+      nodes: [{ path: "/configs", name: "configs", parentPath: "/", hasChildren: true }],
+    });
+
+    await act(async () => {
+      await emitCacheEvent({
+        connectionId: "c1",
+        eventType: "nodes_added",
+        parentPath: "/",
+        paths: [],
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.cacheStatus).toBe("resyncing");
+    });
+
+    getTreeSnapshotMock.mockResolvedValueOnce({
+      status: "live",
+      nodes: [{ path: "/configs", name: "configs", parentPath: "/", hasChildren: true }],
+    });
+
+    await act(async () => {
+      await emitCacheEvent({
+        connectionId: "c1",
+        eventType: "nodes_added",
+        parentPath: "/",
+        paths: [],
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.cacheStatus).toBe("live");
+    });
+  });
+
   it("hides descendants of a collapsed child when projecting a nested snapshot", () => {
     const snapshot: TreeSnapshot = {
       status: "live",

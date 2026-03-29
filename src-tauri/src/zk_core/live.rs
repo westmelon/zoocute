@@ -493,13 +493,6 @@ impl LiveAdapter {
                         "cache_bootstrap_completed",
                         "/",
                     );
-                    emit_cache_event(
-                        &app_handle,
-                        &connection_id,
-                        "resync_completed",
-                        None,
-                        Vec::new(),
-                    );
                     let event = snapshot_ready_cache_event(&connection_id);
                     emit_cache_event(
                         &app_handle,

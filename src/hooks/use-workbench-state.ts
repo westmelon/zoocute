@@ -166,8 +166,7 @@ function treeNodesToSnapshotNodes(
 }
 
 function shouldReplaceSnapshot(existing: TreeSnapshot | undefined, next: TreeSnapshot): boolean {
-  if (!existing) return true;
-  return next.nodes.length > existing.nodes.length;
+  return true;
 }
 
 export function useWorkbenchState() {
