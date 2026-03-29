@@ -1,1 +1,1 @@
-{}
+{"main-capability":{"identifier":"main-capability","description":"Grants the main application window access to core Tauri APIs, including event listen/emit.","local":true,"windows":["main"],"permissions":["core:default"]}}

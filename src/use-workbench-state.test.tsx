@@ -40,6 +40,16 @@ vi.mock("./lib/commands", () => ({
   loadFullTree: vi.fn(async () => []),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => vi.fn()),
+}));
+
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    listen: vi.fn(async () => vi.fn()),
+  }),
+}));
+
 const CONN: SavedConnection = { id: "c1", name: "本地", connectionString: "127.0.0.1:2181", timeoutMs: 5000 };
 
 beforeEach(() => {

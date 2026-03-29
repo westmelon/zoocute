@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,8 @@ pub struct LiveAdapter {
     connection_id: String,
     log_store: Arc<ZkLogStore>,
     app_handle: AppHandle<Wry>,
+    children_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
+    data_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 struct NoopWatcher;
@@ -28,6 +31,8 @@ struct ChildrenWatcher {
     app_handle: AppHandle<Wry>,
     connection_id: String,
     path: String,
+    log_store: Arc<ZkLogStore>,
+    active_paths: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone)]
@@ -36,6 +41,8 @@ struct DataWatcher {
     app_handle: AppHandle<Wry>,
     connection_id: String,
     path: String,
+    log_store: Arc<ZkLogStore>,
+    active_paths: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 impl Watcher for NoopWatcher {
@@ -44,19 +51,24 @@ impl Watcher for NoopWatcher {
 
 impl Watcher for ChildrenWatcher {
     fn handle(&self, event: WatchedEvent) {
+        clear_active_watch(&self.active_paths, &self.path);
+        append_watch_log(
+            &self.log_store,
+            &self.connection_id,
+            "watch_children_triggered",
+            &self.path,
+            true,
+            "children watch triggered".into(),
+            Some(serde_json::json!({
+                "rawEventType": format!("{:?}", event.event_type),
+                "keeperState": format!("{:?}", event.keeper_state),
+            })),
+            None,
+        );
+
         let Some((event_type, should_reregister)) = map_children_watch_event(event.event_type) else {
             return;
         };
-
-        if should_reregister
-            && self
-                .client
-                .get_children_w(&self.path, self.clone())
-                .map_err(map_zk_error)
-                .is_err()
-        {
-            return;
-        }
 
         emit_watch_event(
             &self.app_handle,
@@ -64,24 +76,68 @@ impl Watcher for ChildrenWatcher {
             event_type,
             &self.path,
         );
+        append_watch_log(
+            &self.log_store,
+            &self.connection_id,
+            "watch_emit",
+            &self.path,
+            true,
+            format!("emitted {event_type}"),
+            None,
+            None,
+        );
+
+        if should_reregister {
+            let watcher = self.clone();
+            std::thread::spawn(move || {
+                let result = register_children_watch(&watcher).map(|_| ());
+                match result {
+                    Ok(_) => append_watch_log(
+                        &watcher.log_store,
+                        &watcher.connection_id,
+                        "watch_reregister_children",
+                        &watcher.path,
+                        true,
+                        "re-registered children watch".into(),
+                        None,
+                        None,
+                    ),
+                    Err(error) => append_watch_log(
+                        &watcher.log_store,
+                        &watcher.connection_id,
+                        "watch_reregister_children",
+                        &watcher.path,
+                        false,
+                        "failed to re-register children watch".into(),
+                        None,
+                        Some(error),
+                    ),
+                }
+            });
+        }
     }
 }
 
 impl Watcher for DataWatcher {
     fn handle(&self, event: WatchedEvent) {
+        clear_active_watch(&self.active_paths, &self.path);
+        append_watch_log(
+            &self.log_store,
+            &self.connection_id,
+            "watch_data_triggered",
+            &self.path,
+            true,
+            "data watch triggered".into(),
+            Some(serde_json::json!({
+                "rawEventType": format!("{:?}", event.event_type),
+                "keeperState": format!("{:?}", event.keeper_state),
+            })),
+            None,
+        );
+
         let Some((event_type, should_reregister)) = map_data_watch_event(event.event_type) else {
             return;
         };
-
-        if should_reregister
-            && self
-                .client
-                .get_data_w(&self.path, self.clone())
-                .map_err(map_zk_error)
-                .is_err()
-        {
-            return;
-        }
 
         emit_watch_event(
             &self.app_handle,
@@ -89,6 +145,45 @@ impl Watcher for DataWatcher {
             event_type,
             &self.path,
         );
+        append_watch_log(
+            &self.log_store,
+            &self.connection_id,
+            "watch_emit",
+            &self.path,
+            true,
+            format!("emitted {event_type}"),
+            None,
+            None,
+        );
+
+        if should_reregister {
+            let watcher = self.clone();
+            std::thread::spawn(move || {
+                let result = register_data_watch(&watcher).map(|_| ());
+                match result {
+                    Ok(_) => append_watch_log(
+                        &watcher.log_store,
+                        &watcher.connection_id,
+                        "watch_reregister_data",
+                        &watcher.path,
+                        true,
+                        "re-registered data watch".into(),
+                        None,
+                        None,
+                    ),
+                    Err(error) => append_watch_log(
+                        &watcher.log_store,
+                        &watcher.connection_id,
+                        "watch_reregister_data",
+                        &watcher.path,
+                        false,
+                        "failed to re-register data watch".into(),
+                        None,
+                        Some(error),
+                    ),
+                }
+            });
+        }
     }
 }
 
@@ -113,6 +208,87 @@ fn emit_watch_event(
             path: path.to_string(),
         },
     );
+}
+
+fn append_watch_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+    success: bool,
+    message: String,
+    meta: Option<serde_json::Value>,
+    error: Option<String>,
+) {
+    log_store.append(&ZkLogEntry {
+        timestamp: now_millis(),
+        level: if success { "DEBUG".into() } else { "ERROR".into() },
+        connection_id: Some(connection_id.to_string()),
+        operation: operation.to_string(),
+        path: Some(path.to_string()),
+        success,
+        duration_ms: 0,
+        message,
+        error,
+        meta,
+    });
+}
+
+fn should_register_watch(
+    active_paths: &Arc<std::sync::Mutex<HashSet<String>>>,
+    path: &str,
+) -> bool {
+    let mut guard = active_paths.lock().unwrap_or_else(|e| e.into_inner());
+    guard.insert(path.to_string())
+}
+
+fn clear_active_watch(
+    active_paths: &Arc<std::sync::Mutex<HashSet<String>>>,
+    path: &str,
+) {
+    let mut guard = active_paths.lock().unwrap_or_else(|e| e.into_inner());
+    guard.remove(path);
+}
+
+fn register_children_watch(watcher: &ChildrenWatcher) -> Result<Vec<String>, String> {
+    if should_register_watch(&watcher.active_paths, &watcher.path) {
+        match watcher
+            .client
+            .get_children_w(&watcher.path, watcher.clone())
+            .map_err(map_zk_error)
+        {
+            Ok(children) => Ok(children),
+            Err(error) => {
+                clear_active_watch(&watcher.active_paths, &watcher.path);
+                Err(error)
+            }
+        }
+    } else {
+        watcher
+            .client
+            .get_children(&watcher.path, false)
+            .map_err(map_zk_error)
+    }
+}
+
+fn register_data_watch(
+    watcher: &DataWatcher,
+) -> Result<(Vec<u8>, zookeeper::Stat), String> {
+    if should_register_watch(&watcher.active_paths, &watcher.path) {
+        match watcher
+            .client
+            .get_data_w(&watcher.path, watcher.clone())
+            .map_err(map_zk_error)
+        {
+            Ok(data) => Ok(data),
+            Err(error) => {
+                clear_active_watch(&watcher.active_paths, &watcher.path);
+                Err(error)
+            }
+        }
+    } else {
+        watcher.client.get_data(&watcher.path, false).map_err(map_zk_error)
+    }
 }
 
 fn map_children_watch_event(event_type: WatchedEventType) -> Option<(&'static str, bool)> {
@@ -197,6 +373,8 @@ impl LiveAdapter {
                 connection_id: connection_id.to_string(),
                 log_store,
                 app_handle,
+                children_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
+                data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
             },
             status,
         ))
@@ -456,11 +634,10 @@ impl LiveAdapter {
             app_handle: self.app_handle.clone(),
             connection_id: self.connection_id.clone(),
             path: path.to_string(),
+            log_store: Arc::clone(&self.log_store),
+            active_paths: Arc::clone(&self.children_watch_paths),
         };
-        let children = self
-            .client
-            .get_children_w(path, watcher)
-            .map_err(map_zk_error)?;
+        let children = register_children_watch(&watcher)?;
         children
             .into_iter()
             .map(|name| {
@@ -488,8 +665,10 @@ impl LiveAdapter {
             app_handle: self.app_handle.clone(),
             connection_id: self.connection_id.clone(),
             path: path.to_string(),
+            log_store: Arc::clone(&self.log_store),
+            active_paths: Arc::clone(&self.data_watch_paths),
         };
-        let (data, stat) = self.client.get_data_w(path, watcher).map_err(map_zk_error)?;
+        let (data, stat) = register_data_watch(&watcher)?;
         let interp = interpret_data(&data);
         let (value, format_hint) = match String::from_utf8(data) {
             Ok(text) => (text, None),

@@ -7,7 +7,7 @@ const {
   listChildrenMock,
   getNodeDetailsMock,
   loadFullTreeMock,
-  listenMock,
+  webviewListenMock,
   unlistenMock,
   emitWatchEvent,
 } = vi.hoisted(() => {
@@ -47,7 +47,7 @@ const {
       ephemeral: false,
     })),
     loadFullTreeMock: vi.fn(async () => []),
-    listenMock: vi.fn(async (_eventName: string, cb: typeof handler) => {
+    webviewListenMock: vi.fn(async (_eventName: string, cb: typeof handler) => {
       handler = cb;
       return unlistenMock;
     }),
@@ -75,8 +75,10 @@ vi.mock("./lib/commands", () => ({
   loadFullTree: loadFullTreeMock,
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: listenMock,
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    listen: webviewListenMock,
+  }),
 }));
 
 const CONN: SavedConnection = {
@@ -109,7 +111,7 @@ describe("watch events", () => {
   it("registers a watch listener on connect and unregisters it on disconnect", async () => {
     const { result } = await connectAndGet();
 
-    expect(listenMock).toHaveBeenCalledWith("zk-watch-event", expect.any(Function));
+    expect(webviewListenMock).toHaveBeenCalledWith("zk-watch-event", expect.any(Function));
 
     await act(async () => {
       await result.current.disconnectSession("c1");
@@ -195,6 +197,51 @@ describe("watch events", () => {
     });
   });
 
+  it("loads children when node details reveal descendants for a node previously marked as leaf", async () => {
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/configs", name: "configs", hasChildren: false }];
+      }
+      if (path === "/configs") {
+        return [{ path: "/configs/late-child", name: "late-child", hasChildren: false }];
+      }
+      return [];
+    });
+
+    getNodeDetailsMock.mockResolvedValueOnce({
+      path: "/configs",
+      value: "value-v1",
+      dataKind: "text",
+      displayModeLabel: "文本 · 可编辑",
+      editable: true,
+      rawPreview: "",
+      decodedPreview: "",
+      version: 1,
+      childrenCount: 1,
+      updatedAt: "",
+      cVersion: 0,
+      aclVersion: 0,
+      cZxid: null,
+      mZxid: null,
+      cTime: 0,
+      mTime: 0,
+      dataLength: 8,
+      ephemeral: false,
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await result.current.openNode("/configs");
+    });
+
+    await waitFor(() => {
+      const configs = result.current.treeNodes.find((node) => node.path === "/configs");
+      expect(configs?.children?.map((child) => child.name)).toEqual(["late-child"]);
+      expect(result.current.expandedPaths.has("/configs")).toBe(true);
+    });
+  });
+
   it("removes a deleted node, clears the active panel, and refreshes the parent", async () => {
     const { result } = await connectAndGet();
 
@@ -222,5 +269,77 @@ describe("watch events", () => {
     });
 
     expect(listChildrenMock).toHaveBeenCalledWith("c1", "/");
+  });
+
+  it("treats NoNode during forced child refresh as a delete instead of surfacing an error", async () => {
+    let deleted = false;
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return deleted ? [] : [{ path: "/configs", name: "configs", hasChildren: true }];
+      }
+      if (path === "/configs") {
+        deleted = true;
+        throw new Error("NoNode");
+      }
+      return [];
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/configs",
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.treeNodes.find((node) => node.path === "/configs")).toBeUndefined();
+    });
+
+    expect(result.current.connectionError).toBeNull();
+    expect(listChildrenMock).toHaveBeenCalledWith("c1", "/");
+  });
+
+  it("coalesces repeated children_changed events for the same path while a refresh is in flight", async () => {
+    let release: (() => void) | null = null;
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/configs", name: "configs", hasChildren: true }];
+      }
+      if (path === "/configs") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return [{ path: "/configs/feature-c", name: "feature-c", hasChildren: false }];
+      }
+      return [];
+    });
+
+    const { result } = await connectAndGet();
+
+    const event = {
+      connectionId: "c1" as const,
+      eventType: "children_changed" as const,
+      path: "/configs",
+    };
+
+    await act(async () => {
+      const first = emitWatchEvent(event);
+      const second = emitWatchEvent(event);
+      await Promise.resolve();
+      release?.();
+      await Promise.all([first, second]);
+    });
+
+    await waitFor(() => {
+      const configs = result.current.treeNodes.find((node) => node.path === "/configs");
+      expect(configs?.children?.map((child) => child.name)).toEqual(["feature-c"]);
+    });
+
+    expect(
+      listChildrenMock.mock.calls.filter(([, path]) => path === "/configs")
+    ).toHaveLength(1);
   });
 });

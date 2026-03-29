@@ -54,6 +54,16 @@ vi.mock("./lib/commands", () => ({
   loadFullTree: vi.fn(async () => []),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => vi.fn()),
+}));
+
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    listen: vi.fn(async () => vi.fn()),
+  }),
+}));
+
 const LOCAL_CONN: SavedConnection = {
   id: "local",
   name: "本地开发",

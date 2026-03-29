@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { usePersistedConnections } from "./use-persisted-connections";
 import { useSessionManager } from "./use-session-manager";
 import { useNodeSearch } from "./use-node-search";
@@ -61,9 +61,31 @@ function removeNode(nodes: NodeTreeItem[], targetPath: string): NodeTreeItem[] {
     });
 }
 
+function updateNodeHasChildren(
+  nodes: NodeTreeItem[],
+  targetPath: string,
+  hasChildren: boolean
+): NodeTreeItem[] {
+  return nodes.map((node) => {
+    if (node.path === targetPath) {
+      return { ...node, hasChildren };
+    }
+    if (!node.children?.length) return node;
+    return {
+      ...node,
+      children: updateNodeHasChildren(node.children, targetPath, hasChildren),
+    };
+  });
+}
+
 function getParentPath(path: string): string {
   const lastSlash = path.lastIndexOf("/");
   return lastSlash <= 0 ? "/" : path.substring(0, lastSlash);
+}
+
+function isNoNodeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("NoNode");
 }
 
 export function useWorkbenchState() {
@@ -81,7 +103,8 @@ export function useWorkbenchState() {
   } = useSessionManager();
 
   const nodeSearch = useNodeSearch(activeTabId);
-  const unlistenRefs = useRef<Map<string, UnlistenFn>>(new Map());
+  const unlistenRefs = useRef<Map<string, () => void>>(new Map());
+  const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -106,11 +129,24 @@ export function useWorkbenchState() {
   }, []);
 
   const handleWatchEvent = useEffectEvent(async (event: WatchEvent) => {
+    console.debug("[zk-watch-event] received", event);
     const session = sessions.get(event.connectionId);
     if (!session) return;
 
     if (event.eventType === "children_changed" || event.eventType === "node_created") {
-      await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
+      const pending = pendingChildRefreshRefs.current.get(event.connectionId) ?? new Set<string>();
+      if (pending.has(event.path)) return;
+      pending.add(event.path);
+      pendingChildRefreshRefs.current.set(event.connectionId, pending);
+      try {
+        await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
+      } finally {
+        const next = pendingChildRefreshRefs.current.get(event.connectionId);
+        next?.delete(event.path);
+        if (next && next.size === 0) {
+          pendingChildRefreshRefs.current.delete(event.connectionId);
+        }
+      }
       return;
     }
 
@@ -150,11 +186,15 @@ export function useWorkbenchState() {
 
   async function ensureWatchListener(connectionId: string) {
     if (unlistenRefs.current.has(connectionId)) return;
-    const unlisten = await listen<WatchEvent>("zk-watch-event", (event) => {
+    const handler = (event: { payload: WatchEvent }) => {
       if (event.payload.connectionId !== connectionId) return;
       void handleWatchEvent(event.payload);
+    };
+
+    const unlisten = await getCurrentWebviewWindow().listen<WatchEvent>("zk-watch-event", handler);
+    unlistenRefs.current.set(connectionId, () => {
+      void unlisten();
     });
-    unlistenRefs.current.set(connectionId, unlisten);
   }
 
   async function submitConnection(params: {
@@ -176,8 +216,10 @@ export function useWorkbenchState() {
       addSession(conn, rootNodes);
       nodeSearch.indexNodes(params.connectionId, "/", rootNodes);
       setRibbonMode("browse");
-      void ensureWatchListener(params.connectionId).catch(() => {
-        // Watch registration is best-effort; the session is still usable.
+      void ensureWatchListener(params.connectionId).catch((error) => {
+        setConnectionError(
+          error instanceof Error ? `watch listener 注册失败: ${error.message}` : "watch listener 注册失败"
+        );
       });
 
       // Background: recursively fetch the full tree so all nodes are searchable,
@@ -204,6 +246,7 @@ export function useWorkbenchState() {
   async function disconnectSession(connectionId: string) {
     unlistenRefs.current.get(connectionId)?.();
     unlistenRefs.current.delete(connectionId);
+    pendingChildRefreshRefs.current.delete(connectionId);
     try {
       await disconnectServerCmd(connectionId);
     } catch {
@@ -245,14 +288,23 @@ export function useWorkbenchState() {
       }));
       nodeSearch.indexNodes(connectionId, path, children);
     } catch (error) {
+      const isDeletedDuringRefresh = options?.force && path !== "/" && isNoNodeError(error);
       updateSession(connectionId, (s) => ({
         ...s,
+        treeNodes: isDeletedDuringRefresh ? removeNode(s.treeNodes, path) : s.treeNodes,
+        activePath: isDeletedDuringRefresh && s.activePath === path ? null : s.activePath,
+        activeNode: isDeletedDuringRefresh && s.activePath === path ? null : s.activeNode,
         loadingPaths: (() => {
           const next = new Set(s.loadingPaths);
           next.delete(path);
           return next;
         })(),
       }));
+      if (isDeletedDuringRefresh) {
+        nodeSearch.removeSubtree(connectionId, path);
+        await ensureChildrenLoaded(connectionId, getParentPath(path), { force: true });
+        return;
+      }
       setConnectionError(error instanceof Error ? error.message : "节点读取失败");
     }
   }
@@ -273,11 +325,19 @@ export function useWorkbenchState() {
 
     try {
       const nodeDetails = await getNodeDetails(activeTabId, path);
+      const hasChildren = nodeDetails.childrenCount > 0;
       updateSession(activeTabId, (s) => ({
         ...s,
+        treeNodes: updateNodeHasChildren(s.treeNodes, path, hasChildren),
+        expandedPaths: hasChildren
+          ? new Set(s.expandedPaths).add(path)
+          : s.expandedPaths,
         activePath: path,
         activeNode: nodeDetails,
       }));
+      if (hasChildren) {
+        await ensureChildrenLoaded(activeTabId, path, { force: true });
+      }
     } catch (error) {
       setConnectionError(error instanceof Error ? error.message : "节点读取失败");
     }
