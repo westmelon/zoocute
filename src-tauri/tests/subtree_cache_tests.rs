@@ -124,3 +124,20 @@ fn replace_all_keeps_children_order_stable() {
     assert_eq!(root_children[0].path, "/ssdev");
     assert_eq!(root_children[1].path, "/zookeeper");
 }
+
+#[test]
+fn replace_all_can_recover_from_stale_cache_state() {
+    let mut cache = ConnectionCache::new();
+    cache.upsert_children(
+        "/",
+        vec![NodeRecord::new("/old", "old", Some("/".into()), false)],
+    );
+
+    cache.replace_all(vec![
+        NodeRecord::new("/ssdev", "ssdev", Some("/".into()), true),
+    ]);
+    cache.mark_live();
+
+    assert!(cache.node("/old").is_none());
+    assert!(cache.node("/ssdev").is_some());
+}

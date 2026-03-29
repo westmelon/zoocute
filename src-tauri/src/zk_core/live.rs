@@ -462,6 +462,7 @@ impl LiveAdapter {
             cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
         };
         mark_cache_resyncing(&adapter.cache);
+        append_cache_resync_log(&adapter.log_store, &adapter.connection_id, "cache_resync_started", "/");
         adapter.bootstrap_subtree_cache();
         Ok((adapter, status))
     }
@@ -480,11 +481,24 @@ impl LiveAdapter {
                     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
                     guard.replace_all(nodes);
                     guard.mark_live();
+                    append_cache_resync_log(
+                        &log_store,
+                        &connection_id,
+                        "cache_resync_completed",
+                        "/",
+                    );
                     append_cache_log(
                         &log_store,
                         &connection_id,
                         "cache_bootstrap_completed",
                         "/",
+                    );
+                    emit_cache_event(
+                        &app_handle,
+                        &connection_id,
+                        "resync_completed",
+                        None,
+                        Vec::new(),
                     );
                     let event = snapshot_ready_cache_event(&connection_id);
                     emit_cache_event(
@@ -498,6 +512,13 @@ impl LiveAdapter {
                 Err(error) => {
                     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
                     guard.set_status(CacheStatus::Stale);
+                    append_cache_resync_error_log(
+                        &log_store,
+                        &connection_id,
+                        "cache_resync_failed",
+                        "/",
+                        &error,
+                    );
                     append_cache_error_log(
                         &log_store,
                         &connection_id,
@@ -862,18 +883,15 @@ fn append_cache_log(
     operation: &str,
     path: &str,
 ) {
-    log_store.append(&ZkLogEntry {
-        timestamp: now_millis(),
-        level: "DEBUG".into(),
-        connection_id: Some(connection_id.to_string()),
-        operation: operation.to_string(),
-        path: Some(path.to_string()),
-        success: true,
-        duration_ms: 0,
-        message: operation.to_string(),
-        error: None,
-        meta: None,
-    });
+    log_store.append_operation(
+        Some(connection_id),
+        operation,
+        Some(path),
+        true,
+        operation,
+        None,
+        None,
+    );
 }
 
 fn append_cache_error_log(
@@ -883,18 +901,54 @@ fn append_cache_error_log(
     path: &str,
     error: &str,
 ) {
-    log_store.append(&ZkLogEntry {
-        timestamp: now_millis(),
-        level: "ERROR".into(),
-        connection_id: Some(connection_id.to_string()),
-        operation: operation.to_string(),
-        path: Some(path.to_string()),
-        success: false,
-        duration_ms: 0,
-        message: operation.to_string(),
-        error: Some(error.to_string()),
-        meta: None,
-    });
+    log_store.append_operation(
+        Some(connection_id),
+        operation,
+        Some(path),
+        false,
+        operation,
+        Some(error.to_string()),
+        None,
+    );
+}
+
+fn append_cache_resync_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+) {
+    log_store.append_operation(
+        Some(connection_id),
+        operation,
+        Some(path),
+        true,
+        operation,
+        None,
+        Some(serde_json::json!({
+            "cacheStatus": "resyncing",
+        })),
+    );
+}
+
+fn append_cache_resync_error_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+    error: &str,
+) {
+    log_store.append_operation(
+        Some(connection_id),
+        operation,
+        Some(path),
+        false,
+        operation,
+        Some(error.to_string()),
+        Some(serde_json::json!({
+            "cacheStatus": "stale",
+        })),
+    );
 }
 
 fn mark_cache_resyncing(cache: &Arc<std::sync::Mutex<ConnectionCache>>) {

@@ -276,6 +276,25 @@ describe("watch events", () => {
     expect(result.current.treeNodes.some((n) => n.path === "/ssdev")).toBe(false);
   });
 
+  it("exposes cache status as a read-only ui signal", async () => {
+    const { result } = renderHook(() => useWorkbenchState());
+
+    expect(result.current.cacheStatus).toBe("stale");
+
+    await act(async () => {
+      await result.current.submitConnection({
+        connectionId: "c1",
+        connectionString: CONN.connectionString,
+        username: "",
+        password: "",
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.cacheStatus).toBe("live");
+    });
+  });
+
   it("hides descendants of a collapsed child when projecting a nested snapshot", () => {
     const snapshot: TreeSnapshot = {
       status: "live",

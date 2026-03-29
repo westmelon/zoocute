@@ -873,6 +873,9 @@ export function useWorkbenchState() {
   const draft = activePath ? drafts[activePath] : undefined;
   const editingPaths = activeSession?.editingPaths ?? new Set<string>();
   const isEditing = activePath ? editingPaths.has(activePath) : false;
+  const cacheStatus = activeTabId
+    ? cacheSnapshotsRef.current.get(activeTabId)?.status ?? "stale"
+    : "stale";
 
   return {
     ribbonMode,
@@ -923,6 +926,7 @@ export function useWorkbenchState() {
     searchResults: nodeSearch.searchResults,
     searchMode: nodeSearch.searchMode,
     isIndexing: activeTabId ? indexingConnections.has(activeTabId) : false,
+    cacheStatus,
     locate,
   };
 }
