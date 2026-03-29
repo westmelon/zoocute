@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State, Wry};
 
 use crate::domain::{
-    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto, ZkLogEntry,
+    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto, TreeSnapshotDto,
+    ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
@@ -108,6 +109,21 @@ pub fn get_node_details(
         .map_err(|_| "failed to acquire sessions lock".to_string())?;
     match sessions.get(&connection_id) {
         Some(adapter) => adapter.get_node(&path),
+        None => Err(format!("no active session for connection {connection_id}")),
+    }
+}
+
+#[tauri::command]
+pub fn get_tree_snapshot(
+    connection_id: String,
+    state: State<'_, AppState>,
+) -> Result<TreeSnapshotDto, String> {
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "failed to acquire sessions lock".to_string())?;
+    match sessions.get(&connection_id) {
+        Some(adapter) => adapter.get_tree_snapshot(),
         None => Err(format!("no active session for connection {connection_id}")),
     }
 }

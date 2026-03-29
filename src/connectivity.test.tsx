@@ -1,6 +1,7 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
+import { getTreeSnapshot } from "./lib/commands";
 import type { SavedConnection } from "./lib/types";
 
 const {
@@ -8,6 +9,7 @@ const {
   disconnectServerMock,
   listChildrenMock,
   getNodeDetailsMock,
+  getTreeSnapshotMock,
 } = vi.hoisted(() => ({
   connectServerMock: vi.fn(async () => ({
     connected: true,
@@ -47,6 +49,10 @@ const {
     dataLength: 20,
     ephemeral: false,
   })),
+  getTreeSnapshotMock: vi.fn(async () => ({
+    status: "live",
+    nodes: [{ path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true }],
+  })),
 }));
 
 vi.mock("./lib/commands", () => ({
@@ -54,6 +60,7 @@ vi.mock("./lib/commands", () => ({
   disconnectServer: disconnectServerMock,
   listChildren: listChildrenMock,
   getNodeDetails: getNodeDetailsMock,
+  getTreeSnapshot: getTreeSnapshotMock,
   saveNode: vi.fn(async () => {}),
   createNode: vi.fn(async () => {}),
   deleteNode: vi.fn(async () => {}),
@@ -217,5 +224,18 @@ describe("disconnectSession", () => {
 
     expect(result.current.hasActiveSessions).toBe(false);
     expect(result.current.ribbonMode).toBe("connections");
+  });
+});
+
+describe("getTreeSnapshot", () => {
+  it("requests a tree snapshot for the active connection", async () => {
+    getTreeSnapshotMock.mockResolvedValue({
+      status: "live",
+      nodes: [{ path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true }],
+    });
+
+    const snapshot = await getTreeSnapshot("local");
+    expect(snapshot.status).toBe("live");
+    expect(snapshot.nodes[0].path).toBe("/ssdev");
   });
 });

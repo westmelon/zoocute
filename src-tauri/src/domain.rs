@@ -69,6 +69,22 @@ pub struct LoadedTreeNodeDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CachedTreeNodeDto {
+    pub path: String,
+    pub name: String,
+    pub parent_path: Option<String>,
+    pub has_children: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeSnapshotDto {
+    pub status: String,
+    pub nodes: Vec<CachedTreeNodeDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NodeDetailsDto {
     pub path: String,
     pub value: String,

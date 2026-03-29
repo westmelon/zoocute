@@ -1,4 +1,5 @@
 use zoocute_lib::zk_core::cache::{ConnectionCache, NodeRecord};
+use zoocute_lib::domain::{CachedTreeNodeDto, TreeSnapshotDto};
 
 #[test]
 fn inserts_root_children_and_tracks_parent_relationships() {
@@ -75,4 +76,20 @@ fn refreshing_parent_replaces_stale_children_and_descendants() {
     let root_children = cache.children_of("/");
     assert_eq!(root_children.len(), 1);
     assert_eq!(root_children[0].path, "/zookeeper");
+}
+
+#[test]
+fn tree_snapshot_dto_carries_nodes_and_status() {
+    let snapshot = TreeSnapshotDto {
+        status: "bootstrapping".into(),
+        nodes: vec![CachedTreeNodeDto {
+            path: "/ssdev".into(),
+            name: "ssdev".into(),
+            parent_path: Some("/".into()),
+            has_children: true,
+        }],
+    };
+
+    assert_eq!(snapshot.status, "bootstrapping");
+    assert_eq!(snapshot.nodes[0].path, "/ssdev");
 }

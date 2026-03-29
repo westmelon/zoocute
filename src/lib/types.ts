@@ -15,6 +15,13 @@ export interface NodeTreeItem {
   children?: NodeTreeItem[];
 }
 
+export interface CachedTreeNode {
+  path: string;
+  name: string;
+  parentPath: string | null;
+  hasChildren: boolean;
+}
+
 export type NodeFormatHint = "text" | "binary" | "unknown";
 export type DataKind = "json" | "text" | "cautious" | "binary";
 
@@ -38,6 +45,11 @@ export interface NodeDetails {
   mTime: number;
   dataLength: number;
   ephemeral: boolean;
+}
+
+export interface TreeSnapshot {
+  status: "bootstrapping" | "live" | "resyncing" | "stale";
+  nodes: CachedTreeNode[];
 }
 
 export interface CachedNode {

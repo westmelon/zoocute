@@ -6,8 +6,8 @@ use tauri::{AppHandle, Emitter, Wry};
 use zookeeper::{Acl, CreateMode, WatchedEventType, Watcher, WatchedEvent, ZooKeeper};
 
 use crate::domain::{
-    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto, WatchEventDto,
-    ZkLogEntry,
+    CachedTreeNodeDto, ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto,
+    NodeDetailsDto, TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
@@ -523,6 +523,24 @@ impl LiveAdapter {
         Ok(nodes)
     }
 
+    pub fn get_tree_snapshot(&self) -> Result<TreeSnapshotDto, String> {
+        let nodes = self.load_full_tree()?;
+        let nodes = nodes
+            .into_iter()
+            .map(|node| CachedTreeNodeDto {
+                parent_path: parent_path_for(&node.path),
+                path: node.path,
+                name: node.name,
+                has_children: node.has_children,
+            })
+            .collect();
+
+        Ok(TreeSnapshotDto {
+            status: "live".into(),
+            nodes,
+        })
+    }
+
     /// Enumerate all children of `path` and recurse into each one.
     fn collect_subtree(&self, path: &str, result: &mut Vec<LoadedTreeNodeDto>) -> Result<(), String> {
         let children = self.client.get_children(path, false).map_err(map_zk_error)?;
@@ -744,6 +762,19 @@ impl LiveAdapter {
 
 fn map_zk_error(error: zookeeper::ZkError) -> String {
     format!("{error:?}")
+}
+
+fn parent_path_for(path: &str) -> Option<String> {
+    if path == "/" {
+        return None;
+    }
+
+    let last_slash = path.rfind('/')?;
+    if last_slash == 0 {
+        Some("/".into())
+    } else {
+        Some(path[..last_slash].to_string())
+    }
 }
 
 #[cfg(test)]
