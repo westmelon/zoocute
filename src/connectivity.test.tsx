@@ -51,6 +51,7 @@ vi.mock("./lib/commands", () => ({
   saveNode: vi.fn(async () => {}),
   createNode: vi.fn(async () => {}),
   deleteNode: vi.fn(async () => {}),
+  loadFullTree: vi.fn(async () => []),
 }));
 
 const LOCAL_CONN: SavedConnection = {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::State;
+use tauri::{AppHandle, State, Wry};
 
 use crate::domain::{
     ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto, ZkLogEntry,
@@ -16,15 +16,32 @@ pub struct AppState {
     pub sessions: Mutex<HashMap<String, LiveAdapter>>,
     pub mock: MockAdapter,
     pub log_store: Arc<ZkLogStore>,
+    pub app_handle: Option<AppHandle<Wry>>,
 }
 
 impl AppState {
-    pub fn new(log_path: PathBuf) -> Self {
+    pub fn new(log_path: PathBuf, app_handle: AppHandle<Wry>) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             mock: MockAdapter::default(),
             log_store: Arc::new(ZkLogStore::new(log_path)),
+            app_handle: Some(app_handle),
         }
+    }
+
+    pub fn new_for_tests(log_path: PathBuf) -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            mock: MockAdapter::default(),
+            log_store: Arc::new(ZkLogStore::new(log_path)),
+            app_handle: None,
+        }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new_for_tests(PathBuf::from("target/test-zookeeper-debug.jsonl"))
     }
 }
 
@@ -35,7 +52,13 @@ pub fn connect_server(
     state: State<'_, AppState>,
 ) -> Result<ConnectionStatusDto, String> {
     let log_store = Arc::clone(&state.log_store);
-    let (adapter, result) = LiveAdapter::connect_live(&connection_id, &request, log_store)?;
+    let app_handle = state
+        .app_handle
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "app handle unavailable".to_string())?;
+    let (adapter, result) =
+        LiveAdapter::connect_live(&connection_id, &request, log_store, app_handle)?;
     let mut sessions = state
         .sessions
         .lock()

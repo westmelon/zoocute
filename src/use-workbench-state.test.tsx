@@ -37,6 +37,7 @@ vi.mock("./lib/commands", () => ({
   saveNode: vi.fn(async () => {}),
   createNode: vi.fn(async () => {}),
   deleteNode: vi.fn(async () => {}),
+  loadFullTree: vi.fn(async () => []),
 }));
 
 const CONN: SavedConnection = { id: "c1", name: "本地", connectionString: "127.0.0.1:2181", timeoutMs: 5000 };

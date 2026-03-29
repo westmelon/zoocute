@@ -53,6 +53,14 @@ pub struct ConnectionStatusDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WatchEventDto {
+    pub connection_id: String,
+    pub event_type: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoadedTreeNodeDto {
     pub path: String,
     pub name: String,
