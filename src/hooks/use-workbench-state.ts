@@ -151,15 +151,15 @@ function extractErrorMessage(error: unknown): string | null {
 
 function formatConnectionError(error: unknown): string {
   const message = extractErrorMessage(error);
-  if (!message) return "连接失败";
+  if (!message) return "\u8fde\u63a5\u5931\u8d25";
   if (message.includes("NoAuth") || message.includes("AuthFailed")) {
-    return "认证失败：账号或密码错误，或当前账号没有访问根节点的权限。请检查用户名、密码，并确认已保存最新配置。";
+    return "\u8ba4\u8bc1\u5931\u8d25\uff1a\u8d26\u53f7\u6216\u5bc6\u7801\u9519\u8bef\uff0c\u6216\u5f53\u524d\u8d26\u53f7\u6ca1\u6709\u8bbf\u95ee\u6839\u8282\u70b9\u7684\u6743\u9650\u3002\u8bf7\u68c0\u67e5\u7528\u6237\u540d\u3001\u5bc6\u7801\uff0c\u5e76\u786e\u8ba4\u5df2\u4fdd\u5b58\u6700\u65b0\u914d\u7f6e\u3002";
   }
   if (message.includes("Timeout")) {
-    return "连接超时：请检查连接地址和 ZooKeeper 服务是否可达。";
+    return "\u8fde\u63a5\u8d85\u65f6\uff1a\u8bf7\u68c0\u67e5\u8fde\u63a5\u5730\u5740\u548c ZooKeeper \u670d\u52a1\u662f\u5426\u53ef\u8fbe\u3002";
   }
   if (message.includes("empty connect string")) {
-    return "连接地址不能为空。";
+    return "\u8fde\u63a5\u5730\u5740\u4e0d\u80fd\u4e3a\u7a7a\u3002";
   }
   return message;
 }
@@ -383,12 +383,14 @@ export function useWorkbenchState() {
     setIsConnecting(true);
     setConnectionError(null);
     setConnectionNotice(null);
+    let connected = false;
     try {
       await connectServer(params.connectionId, {
         connectionString: params.connectionString,
         username: params.username || undefined,
         password: params.password || undefined,
       });
+      connected = true;
       const rootNodes = await listChildren(params.connectionId, "/");
       const conn = savedConnections.find((c) => c.id === params.connectionId)!;
       addSession(conn, rootNodes);
@@ -419,6 +421,15 @@ export function useWorkbenchState() {
           });
         });
     } catch (error) {
+      if (connected) {
+        cacheSnapshotsRef.current.delete(params.connectionId);
+        pendingChildRefreshRefs.current.delete(params.connectionId);
+        try {
+          await disconnectServerCmd(params.connectionId);
+        } catch {
+          // best-effort cleanup after a partially successful connection attempt
+        }
+      }
       setConnectionError(formatConnectionError(error));
     } finally {
       setIsConnecting(false);
@@ -440,6 +451,7 @@ export function useWorkbenchState() {
         username: params.username || undefined,
         password: params.password || undefined,
       });
+      await listChildren(params.connectionId, "/");
       setConnectionNotice("连接测试成功");
     } catch (error) {
       setConnectionError(formatConnectionError(error));
@@ -826,4 +838,5 @@ export function useWorkbenchState() {
     locate,
   };
 }
+
 

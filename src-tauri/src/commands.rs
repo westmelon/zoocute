@@ -87,11 +87,14 @@ pub fn list_children(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<LoadedTreeNodeDto>, String> {
-    let sessions = state
-        .sessions
-        .lock()
-        .map_err(|_| "failed to acquire sessions lock".to_string())?;
-    match sessions.get(&connection_id) {
+    let adapter = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "failed to acquire sessions lock".to_string())?;
+        sessions.get(&connection_id).cloned()
+    };
+    match adapter {
         Some(adapter) => adapter.list_children(&path),
         None => Err(format!("no active session for connection {connection_id}")),
     }
@@ -103,11 +106,14 @@ pub fn get_node_details(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<NodeDetailsDto, String> {
-    let sessions = state
-        .sessions
-        .lock()
-        .map_err(|_| "failed to acquire sessions lock".to_string())?;
-    match sessions.get(&connection_id) {
+    let adapter = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "failed to acquire sessions lock".to_string())?;
+        sessions.get(&connection_id).cloned()
+    };
+    match adapter {
         Some(adapter) => adapter.get_node(&path),
         None => Err(format!("no active session for connection {connection_id}")),
     }
@@ -138,11 +144,14 @@ pub fn save_node(
     value: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let sessions = state
-        .sessions
-        .lock()
-        .map_err(|_| "failed to acquire sessions lock".to_string())?;
-    match sessions.get(&connection_id) {
+    let adapter = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "failed to acquire sessions lock".to_string())?;
+        sessions.get(&connection_id).cloned()
+    };
+    match adapter {
         Some(adapter) => adapter.save_node(&path, &value),
         None => Err("写操作需要连接到 ZooKeeper".to_string()),
     }
@@ -155,11 +164,14 @@ pub fn create_node(
     data: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let sessions = state
-        .sessions
-        .lock()
-        .map_err(|_| "failed to acquire sessions lock".to_string())?;
-    match sessions.get(&connection_id) {
+    let adapter = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "failed to acquire sessions lock".to_string())?;
+        sessions.get(&connection_id).cloned()
+    };
+    match adapter {
         Some(adapter) => adapter.create_node(&path, &data),
         None => Err("写操作需要连接到 ZooKeeper".to_string()),
     }
@@ -172,11 +184,14 @@ pub fn delete_node(
     recursive: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let sessions = state
-        .sessions
-        .lock()
-        .map_err(|_| "failed to acquire sessions lock".to_string())?;
-    match sessions.get(&connection_id) {
+    let adapter = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "failed to acquire sessions lock".to_string())?;
+        sessions.get(&connection_id).cloned()
+    };
+    match adapter {
         Some(adapter) => adapter.delete_node(&path, recursive),
         None => Err("写操作需要连接到 ZooKeeper".to_string()),
     }
