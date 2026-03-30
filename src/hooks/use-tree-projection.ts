@@ -19,6 +19,9 @@ export function buildProjectedTree(
     children.push(node);
     childrenByParent.set(key, children);
   }
+  for (const children of childrenByParent.values()) {
+    children.sort((a, b) => a.name.localeCompare(b.name));
+  }
 
   const projectLevel = (parentPath: string | null): NodeTreeItem[] => {
     const nodes = childrenByParent.get(parentKey(parentPath)) ?? [];

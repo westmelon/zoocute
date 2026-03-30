@@ -102,6 +102,15 @@ function removeNode(nodes: NodeTreeItem[], targetPath: string): NodeTreeItem[] {
     });
 }
 
+function pruneExpandedPaths(expandedPaths: Set<string>, targetPath: string): Set<string> {
+  const next = new Set<string>();
+  for (const path of expandedPaths) {
+    if (path === targetPath || path.startsWith(`${targetPath}/`)) continue;
+    next.add(path);
+  }
+  return next;
+}
+
 function updateNodeHasChildren(
   nodes: NodeTreeItem[],
   targetPath: string,
@@ -285,6 +294,7 @@ export function useWorkbenchState() {
         commitSession(event.connectionId, {
           ...current,
           treeNodes: nextTree,
+          expandedPaths: pruneExpandedPaths(current.expandedPaths, event.path),
           activePath: current.activePath === event.path ? null : current.activePath,
           activeNode: current.activePath === event.path ? null : current.activeNode,
         });
@@ -501,6 +511,7 @@ export function useWorkbenchState() {
       updateSession(connectionId, (s) => ({
         ...s,
         treeNodes: isDeletedDuringRefresh ? removeNode(s.treeNodes, path) : s.treeNodes,
+        expandedPaths: isDeletedDuringRefresh ? pruneExpandedPaths(s.expandedPaths, path) : s.expandedPaths,
         activePath: isDeletedDuringRefresh && s.activePath === path ? null : s.activePath,
         activeNode: isDeletedDuringRefresh && s.activePath === path ? null : s.activeNode,
         loadingPaths: (() => {

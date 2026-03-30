@@ -486,6 +486,13 @@ body {
   color: var(--success);
 }
 .tree-data-dot--empty { color: var(--text-muted); }
+.tree-list--loading {
+  animation: skeletonReveal 0ms linear 200ms both;
+}
+@keyframes skeletonReveal {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
 .tree-loading-row {
   height: 18px;
   display: flex;

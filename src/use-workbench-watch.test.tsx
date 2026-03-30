@@ -385,6 +385,29 @@ describe("watch events", () => {
     expect(projected.some((node) => node.path === "/ssdev/services/bbp/detail")).toBe(false);
   });
 
+  it("produces stable node order regardless of snapshot node sequence", () => {
+    const nodesInZkOrder = [
+      { path: "/b", name: "b", parentPath: "/", hasChildren: false },
+      { path: "/a", name: "a", parentPath: "/", hasChildren: false },
+      { path: "/c", name: "c", parentPath: "/", hasChildren: false },
+    ];
+    const nodesInSortedOrder = [...nodesInZkOrder].sort((x, y) => x.name.localeCompare(y.name));
+
+    const projectedFromZkOrder = buildProjectedTree(
+      { status: "live", nodes: nodesInZkOrder },
+      new Set()
+    );
+    const projectedFromSortedOrder = buildProjectedTree(
+      { status: "live", nodes: nodesInSortedOrder },
+      new Set()
+    );
+
+    expect(projectedFromZkOrder.map((n) => n.name)).toEqual(["a", "b", "c"]);
+    expect(projectedFromZkOrder.map((n) => n.name)).toEqual(
+      projectedFromSortedOrder.map((n) => n.name)
+    );
+  });
+
   it("refreshes the active node details on data_changed", async () => {
     const { result } = await connectAndGet();
 
@@ -579,6 +602,81 @@ describe("watch events", () => {
     });
 
     expect(listChildrenMock).toHaveBeenCalledWith("c1", "/");
+  });
+
+  it("clears stale expanded state for a deleted subtree so recreated nodes do not auto-expand", async () => {
+    const snapshot: TreeSnapshot = {
+      status: "live",
+      nodes: [
+        { path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true },
+        { path: "/ssdev/services", name: "services", parentPath: "/ssdev", hasChildren: true },
+        {
+          path: "/ssdev/services/bbp",
+          name: "bbp",
+          parentPath: "/ssdev/services",
+          hasChildren: true,
+        },
+        {
+          path: "/ssdev/services/bbp/detail",
+          name: "detail",
+          parentPath: "/ssdev/services/bbp",
+          hasChildren: false,
+        },
+      ],
+    };
+    getTreeSnapshotMock.mockResolvedValue(snapshot);
+
+    const { result } = await connectAndGet();
+    await expandPath(result, "/ssdev");
+    await expandPath(result, "/ssdev/services");
+    await expandPath(result, "/ssdev/services/bbp");
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "node_deleted",
+        path: "/ssdev/services/bbp",
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.expandedPaths.has("/ssdev/services/bbp")).toBe(false);
+    });
+
+    getTreeSnapshotMock.mockResolvedValue({
+      status: "live",
+      nodes: [
+        { path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true },
+        { path: "/ssdev/services", name: "services", parentPath: "/ssdev", hasChildren: true },
+        {
+          path: "/ssdev/services/bbp",
+          name: "bbp",
+          parentPath: "/ssdev/services",
+          hasChildren: true,
+        },
+        {
+          path: "/ssdev/services/bbp/detail",
+          name: "detail",
+          parentPath: "/ssdev/services/bbp",
+          hasChildren: false,
+        },
+      ],
+    });
+
+    await act(async () => {
+      await emitCacheEvent({
+        connectionId: "c1",
+        eventType: "nodes_added",
+        parentPath: "/ssdev/services",
+        paths: ["/ssdev/services/bbp"],
+      });
+    });
+
+    await waitFor(() => {
+      const bbp = findTreeNode(result.current.treeNodes, "/ssdev/services/bbp");
+      expect(bbp).toBeDefined();
+      expect(bbp?.children).toBeUndefined();
+    });
   });
 
   it("treats NoNode during forced child refresh as a delete instead of surfacing an error", async () => {
