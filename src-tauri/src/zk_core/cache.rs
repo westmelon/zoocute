@@ -125,6 +125,66 @@ impl ConnectionCache {
         }
     }
 
+    pub fn reconcile_children(&mut self, parent_path: &str, children: Vec<NodeRecord>) {
+        self.reconcile_children_internal(parent_path, children, false);
+    }
+
+    pub fn reconcile_children_preserving_expandability(
+        &mut self,
+        parent_path: &str,
+        children: Vec<NodeRecord>,
+    ) {
+        self.reconcile_children_internal(parent_path, children, true);
+    }
+
+    fn reconcile_children_internal(
+        &mut self,
+        parent_path: &str,
+        children: Vec<NodeRecord>,
+        preserve_known_expandability: bool,
+    ) {
+        let previous_child_paths = self
+            .children_by_parent
+            .remove(parent_path)
+            .unwrap_or_default();
+
+        let mut next_child_paths = children
+            .iter()
+            .map(|child| child.path.clone())
+            .collect::<Vec<_>>();
+        next_child_paths.sort();
+
+        let next_child_path_set = next_child_paths.iter().cloned().collect::<std::collections::HashSet<_>>();
+
+        for child_path in previous_child_paths {
+            if !next_child_path_set.contains(&child_path) {
+                self.remove_subtree(&child_path);
+            }
+        }
+
+        let should_preserve_expandability = preserve_known_expandability
+            && next_child_paths.is_empty()
+            && parent_path != "/"
+            && self
+                .nodes_by_path
+                .get(parent_path)
+                .map(|node| node.has_children)
+                .unwrap_or(false);
+
+        if parent_path != "/" {
+            if let Some(parent) = self.nodes_by_path.get_mut(parent_path) {
+                parent.has_children = should_preserve_expandability || !next_child_paths.is_empty();
+            }
+        }
+
+        self.children_by_parent
+            .insert(parent_path.to_string(), next_child_paths);
+
+        for child in children {
+            self.nodes_by_path.insert(child.path.clone(), child);
+        }
+    }
+
     pub fn children_of(&self, parent_path: &str) -> Vec<NodeRecord> {
         self.children_by_parent
             .get(parent_path)

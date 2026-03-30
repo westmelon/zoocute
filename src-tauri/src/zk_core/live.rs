@@ -79,32 +79,6 @@ impl Watcher for ChildrenWatcher {
             event_type,
             &self.path,
         );
-        if event_type == "children_changed" {
-            if let Ok(current_child_paths) = current_child_paths(&self.client, &self.path) {
-                let delta = {
-                    let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                    diff_cache_children(&cache, &self.path, &current_child_paths)
-                };
-                if !delta.added.is_empty() {
-                    emit_cache_event(
-                        &self.app_handle,
-                        &self.connection_id,
-                        "nodes_added",
-                        Some(&self.path),
-                        delta.added,
-                    );
-                }
-                if !delta.removed.is_empty() {
-                    emit_cache_event(
-                        &self.app_handle,
-                        &self.connection_id,
-                        "nodes_removed",
-                        Some(&self.path),
-                        delta.removed,
-                    );
-                }
-            }
-        }
         append_watch_log(
             &self.log_store,
             &self.connection_id,
@@ -119,18 +93,45 @@ impl Watcher for ChildrenWatcher {
         if should_reregister {
             let watcher = self.clone();
             std::thread::spawn(move || {
-                let result = register_children_watch(&watcher).map(|_| ());
+                let result = if event_type == "children_changed" {
+                    refresh_cached_children(&watcher)
+                } else {
+                    register_children_watch(&watcher).map(|_| CacheChildDelta {
+                        added: Vec::new(),
+                        removed: Vec::new(),
+                    })
+                };
                 match result {
-                    Ok(_) => append_watch_log(
-                        &watcher.log_store,
-                        &watcher.connection_id,
-                        "watch_reregister_children",
-                        &watcher.path,
-                        true,
-                        "re-registered children watch".into(),
-                        None,
-                        None,
-                    ),
+                    Ok(delta) => {
+                        if !delta.added.is_empty() {
+                            emit_cache_event(
+                                &watcher.app_handle,
+                                &watcher.connection_id,
+                                "nodes_added",
+                                Some(&watcher.path),
+                                delta.added,
+                            );
+                        }
+                        if !delta.removed.is_empty() {
+                            emit_cache_event(
+                                &watcher.app_handle,
+                                &watcher.connection_id,
+                                "nodes_removed",
+                                Some(&watcher.path),
+                                delta.removed,
+                            );
+                        }
+                        append_watch_log(
+                            &watcher.log_store,
+                            &watcher.connection_id,
+                            "watch_reregister_children",
+                            &watcher.path,
+                            true,
+                            "re-registered children watch".into(),
+                            None,
+                            None,
+                        )
+                    }
                     Err(error) => {
                         if let Some((message, meta)) = classify_missing_node_race(&error) {
                             append_watch_log(
@@ -980,18 +981,103 @@ fn collect_node_records(
     Ok(())
 }
 
-fn current_child_paths(client: &ZooKeeper, parent_path: &str) -> Result<Vec<String>, String> {
-    let children = client.get_children(parent_path, false).map_err(map_zk_error)?;
-    Ok(children
+fn child_path(parent_path: &str, child_name: &str) -> String {
+    if parent_path == "/" {
+        format!("/{child_name}")
+    } else {
+        format!("{parent_path}/{child_name}")
+    }
+}
+
+fn load_child_records(
+    client: &ZooKeeper,
+    parent_path: &str,
+    child_names: Vec<String>,
+) -> Result<Vec<NodeRecord>, String> {
+    child_names
         .into_iter()
-        .map(|child| {
-            if parent_path == "/" {
-                format!("/{child}")
-            } else {
-                format!("{parent_path}/{child}")
-            }
+        .map(|name| {
+            let path = child_path(parent_path, &name);
+            let nested_children = client.get_children(&path, false).map_err(map_zk_error)?;
+            Ok(NodeRecord::new(
+                &path,
+                &name,
+                Some(parent_path.to_string()),
+                !nested_children.is_empty(),
+            ))
         })
-        .collect())
+        .collect()
+}
+
+fn list_child_records_with_watch(watcher: &ChildrenWatcher) -> Result<Vec<NodeRecord>, String> {
+    let child_names = register_children_watch(watcher)?;
+    load_child_records(&watcher.client, &watcher.path, child_names)
+}
+
+fn seed_subtree_cache(watcher: &ChildrenWatcher, path: &str) -> Result<(), String> {
+    let branch_watcher = ChildrenWatcher {
+        client: Arc::clone(&watcher.client),
+        app_handle: watcher.app_handle.clone(),
+        connection_id: watcher.connection_id.clone(),
+        path: path.to_string(),
+        log_store: Arc::clone(&watcher.log_store),
+        active_paths: Arc::clone(&watcher.active_paths),
+        cache: Arc::clone(&watcher.cache),
+    };
+    let child_records = list_child_records_with_watch(&branch_watcher)?;
+    {
+        let mut cache = watcher.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.reconcile_children_preserving_expandability(path, child_records.clone());
+    }
+    for child in child_records {
+        seed_subtree_cache(watcher, &child.path)?;
+    }
+    Ok(())
+}
+
+fn refresh_cached_children(watcher: &ChildrenWatcher) -> Result<CacheChildDelta, String> {
+    let child_records = list_child_records_with_watch(watcher)?;
+    let current_child_paths = child_records
+        .iter()
+        .map(|child| child.path.clone())
+        .collect::<Vec<_>>();
+
+    let delta = {
+        let mut cache = watcher.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let delta = diff_cache_children(&cache, &watcher.path, &current_child_paths);
+        cache.reconcile_children(&watcher.path, child_records.clone());
+        delta
+    };
+
+    for child_path in &delta.added {
+        if let Err(error) = seed_subtree_cache(watcher, child_path) {
+            if let Some((message, meta)) = classify_missing_node_race(&error) {
+                append_watch_log(
+                    &watcher.log_store,
+                    &watcher.connection_id,
+                    "cache_seed_subtree",
+                    child_path,
+                    true,
+                    message,
+                    Some(meta),
+                    None,
+                );
+            } else {
+                append_watch_log(
+                    &watcher.log_store,
+                    &watcher.connection_id,
+                    "cache_seed_subtree",
+                    child_path,
+                    false,
+                    "failed to seed subtree cache".into(),
+                    None,
+                    Some(error),
+                );
+            }
+        }
+    }
+
+    Ok(delta)
 }
 
 #[derive(Debug, PartialEq, Eq)]

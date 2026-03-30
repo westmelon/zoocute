@@ -141,3 +141,123 @@ fn replace_all_can_recover_from_stale_cache_state() {
     assert!(cache.node("/old").is_none());
     assert!(cache.node("/ssdev").is_some());
 }
+
+#[test]
+fn reconciling_descendant_children_promotes_recreated_parent_back_to_expandable() {
+    let mut cache = ConnectionCache::new();
+    cache.upsert_children(
+        "/",
+        vec![NodeRecord::new("/ssdev", "ssdev", Some("/".into()), true)],
+    );
+    cache.upsert_children(
+        "/ssdev",
+        vec![NodeRecord::new(
+            "/ssdev/services",
+            "services",
+            Some("/ssdev".into()),
+            true,
+        )],
+    );
+
+    cache.reconcile_children(
+        "/ssdev/services",
+        vec![NodeRecord::new(
+            "/ssdev/services/bbp",
+            "bbp",
+            Some("/ssdev/services".into()),
+            false,
+        )],
+    );
+
+    cache.reconcile_children(
+        "/ssdev/services/bbp",
+        vec![NodeRecord::new(
+            "/ssdev/services/bbp/bbp.organizationDAO",
+            "bbp.organizationDAO",
+            Some("/ssdev/services/bbp".into()),
+            false,
+        )],
+    );
+
+    let bbp = cache.node("/ssdev/services/bbp").expect("bbp node should exist");
+    assert!(bbp.has_children, "bbp should become expandable after descendants appear");
+
+    let snapshot = cache.to_snapshot();
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .any(|node| node.path == "/ssdev/services/bbp/bbp.organizationDAO"),
+        "descendant node should be present in the exported snapshot"
+    );
+}
+
+#[test]
+fn seed_reconcile_preserves_known_expandability_when_first_branch_read_is_empty() {
+    let mut cache = ConnectionCache::new();
+    cache.upsert_children(
+        "/",
+        vec![NodeRecord::new("/ssdev", "ssdev", Some("/".into()), true)],
+    );
+    cache.upsert_children(
+        "/ssdev",
+        vec![NodeRecord::new(
+            "/ssdev/services",
+            "services",
+            Some("/ssdev".into()),
+            true,
+        )],
+    );
+    cache.upsert_children(
+        "/ssdev/services",
+        vec![NodeRecord::new(
+            "/ssdev/services/bbp",
+            "bbp",
+            Some("/ssdev/services".into()),
+            true,
+        )],
+    );
+
+    cache.reconcile_children_preserving_expandability("/ssdev/services/bbp", vec![]);
+
+    let bbp = cache.node("/ssdev/services/bbp").expect("bbp node should exist");
+    assert!(
+        bbp.has_children,
+        "initial subtree seed should not downgrade a known-expandable node"
+    );
+}
+
+#[test]
+fn authoritative_refresh_can_still_demote_parent_when_children_are_truly_gone() {
+    let mut cache = ConnectionCache::new();
+    cache.upsert_children(
+        "/",
+        vec![NodeRecord::new("/ssdev", "ssdev", Some("/".into()), true)],
+    );
+    cache.upsert_children(
+        "/ssdev",
+        vec![NodeRecord::new(
+            "/ssdev/services",
+            "services",
+            Some("/ssdev".into()),
+            true,
+        )],
+    );
+    cache.upsert_children(
+        "/ssdev/services",
+        vec![NodeRecord::new(
+            "/ssdev/services/bbp",
+            "bbp",
+            Some("/ssdev/services".into()),
+            true,
+        )],
+    );
+
+    cache.reconcile_children("/ssdev/services/bbp", vec![]);
+
+    let bbp = cache.node("/ssdev/services/bbp").expect("bbp node should exist");
+    assert!(
+        !bbp.has_children,
+        "authoritative watch refresh should be able to demote a branch back to leaf"
+    );
+}
