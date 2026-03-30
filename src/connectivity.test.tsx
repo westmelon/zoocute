@@ -1,6 +1,7 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
+import { getTreeSnapshot } from "./lib/commands";
 import type { SavedConnection } from "./lib/types";
 
 const {
@@ -8,6 +9,7 @@ const {
   disconnectServerMock,
   listChildrenMock,
   getNodeDetailsMock,
+  getTreeSnapshotMock,
 } = vi.hoisted(() => ({
   connectServerMock: vi.fn(async () => ({
     connected: true,
@@ -47,6 +49,10 @@ const {
     dataLength: 20,
     ephemeral: false,
   })),
+  getTreeSnapshotMock: vi.fn(async () => ({
+    status: "live",
+    nodes: [{ path: "/services", name: "services", parentPath: "/", hasChildren: true }],
+  })),
 }));
 
 vi.mock("./lib/commands", () => ({
@@ -54,6 +60,7 @@ vi.mock("./lib/commands", () => ({
   disconnectServer: disconnectServerMock,
   listChildren: listChildrenMock,
   getNodeDetails: getNodeDetailsMock,
+  getTreeSnapshot: getTreeSnapshotMock,
   saveNode: vi.fn(async () => {}),
   createNode: vi.fn(async () => {}),
   deleteNode: vi.fn(async () => {}),
@@ -100,6 +107,34 @@ describe("submitConnection", () => {
     expect(result.current.activeTabId).toBe("local");
     expect(result.current.ribbonMode).toBe("browse");
     expect(result.current.treeNodes.some((n) => n.name === "services")).toBe(true);
+  });
+
+  it("loads tree snapshot after connection without switching tree rendering source", async () => {
+    getTreeSnapshotMock.mockResolvedValue({
+      status: "live",
+      nodes: [
+        { path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true },
+        {
+          path: "/ssdev/services",
+          name: "services",
+          parentPath: "/ssdev",
+          hasChildren: true,
+        },
+      ],
+    });
+
+    const { result } = renderHook(() => useWorkbenchState());
+
+    await act(async () => {
+      await result.current.submitConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "",
+        password: "",
+      });
+    });
+
+    expect(getTreeSnapshotMock).toHaveBeenCalledWith("local");
   });
 
   it("sets connectionError on failure", async () => {
@@ -165,6 +200,10 @@ describe("toggleNode / lazy loading", () => {
     });
 
     await waitFor(() => {
+      expect(result.current.expandedPaths.has("/services")).toBe(true);
+    });
+
+    await waitFor(() => {
       const services = result.current.treeNodes.find((n) => n.path === "/services");
       expect(services?.children?.some((c) => c.name === "gateway")).toBe(true);
     });
@@ -217,5 +256,18 @@ describe("disconnectSession", () => {
 
     expect(result.current.hasActiveSessions).toBe(false);
     expect(result.current.ribbonMode).toBe("connections");
+  });
+});
+
+describe("getTreeSnapshot", () => {
+  it("requests a tree snapshot for the active connection", async () => {
+    getTreeSnapshotMock.mockResolvedValue({
+      status: "live",
+      nodes: [{ path: "/ssdev", name: "ssdev", parentPath: "/", hasChildren: true }],
+    });
+
+    const snapshot = await getTreeSnapshot("local");
+    expect(snapshot.status).toBe("live");
+    expect(snapshot.nodes[0].path).toBe("/ssdev");
   });
 });

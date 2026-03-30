@@ -6,10 +6,11 @@ use tauri::{AppHandle, Emitter, Wry};
 use zookeeper::{Acl, CreateMode, WatchedEventType, Watcher, WatchedEvent, ZooKeeper};
 
 use crate::domain::{
-    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto, WatchEventDto,
-    ZkLogEntry,
+    CacheEventDto, ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
+    TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
+use crate::zk_core::cache::{CacheStatus, ConnectionCache, NodeRecord};
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::interpreter::{hex_encode, interpret_data};
 
@@ -21,6 +22,7 @@ pub struct LiveAdapter {
     app_handle: AppHandle<Wry>,
     children_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
     data_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
+    cache: Arc<std::sync::Mutex<ConnectionCache>>,
 }
 
 struct NoopWatcher;
@@ -33,6 +35,7 @@ struct ChildrenWatcher {
     path: String,
     log_store: Arc<ZkLogStore>,
     active_paths: Arc<std::sync::Mutex<HashSet<String>>>,
+    cache: Arc<std::sync::Mutex<ConnectionCache>>,
 }
 
 #[derive(Clone)]
@@ -90,18 +93,45 @@ impl Watcher for ChildrenWatcher {
         if should_reregister {
             let watcher = self.clone();
             std::thread::spawn(move || {
-                let result = register_children_watch(&watcher).map(|_| ());
+                let result = if event_type == "children_changed" {
+                    refresh_cached_children(&watcher)
+                } else {
+                    register_children_watch(&watcher).map(|_| CacheChildDelta {
+                        added: Vec::new(),
+                        removed: Vec::new(),
+                    })
+                };
                 match result {
-                    Ok(_) => append_watch_log(
-                        &watcher.log_store,
-                        &watcher.connection_id,
-                        "watch_reregister_children",
-                        &watcher.path,
-                        true,
-                        "re-registered children watch".into(),
-                        None,
-                        None,
-                    ),
+                    Ok(delta) => {
+                        if !delta.added.is_empty() {
+                            emit_cache_event(
+                                &watcher.app_handle,
+                                &watcher.connection_id,
+                                "nodes_added",
+                                Some(&watcher.path),
+                                delta.added,
+                            );
+                        }
+                        if !delta.removed.is_empty() {
+                            emit_cache_event(
+                                &watcher.app_handle,
+                                &watcher.connection_id,
+                                "nodes_removed",
+                                Some(&watcher.path),
+                                delta.removed,
+                            );
+                        }
+                        append_watch_log(
+                            &watcher.log_store,
+                            &watcher.connection_id,
+                            "watch_reregister_children",
+                            &watcher.path,
+                            true,
+                            "re-registered children watch".into(),
+                            None,
+                            None,
+                        )
+                    }
                     Err(error) => {
                         if let Some((message, meta)) = classify_missing_node_race(&error) {
                             append_watch_log(
@@ -223,6 +253,36 @@ fn emit_watch_event(
             path: path.to_string(),
         },
     );
+}
+
+fn emit_cache_event(
+    app_handle: &AppHandle<Wry>,
+    connection_id: &str,
+    event_type: &str,
+    parent_path: Option<&str>,
+    paths: Vec<String>,
+) {
+    let Some(event_type) = map_cache_event_type(event_type) else {
+        return;
+    };
+    let _ = app_handle.emit(
+        "zk-cache-event",
+        CacheEventDto {
+            connection_id: connection_id.to_string(),
+            event_type: event_type.to_string(),
+            parent_path: parent_path.map(|path| path.to_string()),
+            paths,
+        },
+    );
+}
+
+fn snapshot_ready_cache_event(connection_id: &str) -> CacheEventDto {
+    CacheEventDto {
+        connection_id: connection_id.to_string(),
+        event_type: "snapshot_ready".to_string(),
+        parent_path: None,
+        paths: Vec::new(),
+    }
 }
 
 fn append_watch_log(
@@ -393,17 +453,76 @@ impl LiveAdapter {
         });
 
         let (client, status) = outcome?;
-        Ok((
-            Self {
-                client: Arc::new(client),
-                connection_id: connection_id.to_string(),
-                log_store,
-                app_handle,
-                children_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
-                data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
-            },
-            status,
-        ))
+        let adapter = Self {
+            client: Arc::new(client),
+            connection_id: connection_id.to_string(),
+            log_store,
+            app_handle,
+            children_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
+        };
+        mark_cache_resyncing(&adapter.cache);
+        append_cache_resync_log(&adapter.log_store, &adapter.connection_id, "cache_resync_started", "/");
+        adapter.bootstrap_subtree_cache();
+        Ok((adapter, status))
+    }
+
+    pub fn bootstrap_subtree_cache(&self) {
+        let client = Arc::clone(&self.client);
+        let cache = Arc::clone(&self.cache);
+        let connection_id = self.connection_id.clone();
+        let log_store = Arc::clone(&self.log_store);
+        let app_handle = self.app_handle.clone();
+
+        std::thread::spawn(move || {
+            append_cache_log(&log_store, &connection_id, "cache_bootstrap_started", "/");
+            match collect_full_tree_records(client.as_ref()) {
+                Ok(nodes) => {
+                    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.replace_all(nodes);
+                    guard.mark_live();
+                    append_cache_resync_log(
+                        &log_store,
+                        &connection_id,
+                        "cache_resync_completed",
+                        "/",
+                    );
+                    append_cache_log(
+                        &log_store,
+                        &connection_id,
+                        "cache_bootstrap_completed",
+                        "/",
+                    );
+                    let event = snapshot_ready_cache_event(&connection_id);
+                    emit_cache_event(
+                        &app_handle,
+                        &connection_id,
+                        &event.event_type,
+                        event.parent_path.as_deref(),
+                        event.paths,
+                    );
+                }
+                Err(error) => {
+                    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.set_status(CacheStatus::Stale);
+                    append_cache_resync_error_log(
+                        &log_store,
+                        &connection_id,
+                        "cache_resync_failed",
+                        "/",
+                        &error,
+                    );
+                    append_cache_error_log(
+                        &log_store,
+                        &connection_id,
+                        "cache_bootstrap_failed",
+                        "/",
+                        &error,
+                    );
+                }
+            }
+        });
     }
 
     pub fn save_node(&self, path: &str, value: &str) -> Result<(), String> {
@@ -521,6 +640,11 @@ impl LiveAdapter {
         });
         outcome?;
         Ok(nodes)
+    }
+
+    pub fn get_tree_snapshot(&self) -> Result<TreeSnapshotDto, String> {
+        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(cache.to_snapshot())
     }
 
     /// Enumerate all children of `path` and recurse into each one.
@@ -680,6 +804,7 @@ impl LiveAdapter {
             path: path.to_string(),
             log_store: Arc::clone(&self.log_store),
             active_paths: Arc::clone(&self.children_watch_paths),
+            cache: Arc::clone(&self.cache),
         };
         let children = register_children_watch(&watcher)?;
         children
@@ -746,6 +871,261 @@ fn map_zk_error(error: zookeeper::ZkError) -> String {
     format!("{error:?}")
 }
 
+fn append_cache_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+) {
+    log_store.append_operation(
+        Some(connection_id),
+        operation,
+        Some(path),
+        true,
+        operation,
+        None,
+        None,
+    );
+}
+
+fn append_cache_error_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+    error: &str,
+) {
+    log_store.append_operation(
+        Some(connection_id),
+        operation,
+        Some(path),
+        false,
+        operation,
+        Some(error.to_string()),
+        None,
+    );
+}
+
+fn append_cache_resync_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+) {
+    log_store.append_operation(
+        Some(connection_id),
+        operation,
+        Some(path),
+        true,
+        operation,
+        None,
+        Some(serde_json::json!({
+            "cacheStatus": "resyncing",
+        })),
+    );
+}
+
+fn append_cache_resync_error_log(
+    log_store: &ZkLogStore,
+    connection_id: &str,
+    operation: &str,
+    path: &str,
+    error: &str,
+) {
+    log_store.append_operation(
+        Some(connection_id),
+        operation,
+        Some(path),
+        false,
+        operation,
+        Some(error.to_string()),
+        Some(serde_json::json!({
+            "cacheStatus": "stale",
+        })),
+    );
+}
+
+fn mark_cache_resyncing(cache: &Arc<std::sync::Mutex<ConnectionCache>>) {
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.mark_resyncing();
+}
+
+fn collect_full_tree_records(client: &ZooKeeper) -> Result<Vec<NodeRecord>, String> {
+    let mut nodes = Vec::new();
+    let children = client.get_children("/", false).map_err(map_zk_error)?;
+    for name in children {
+        let child_path = format!("/{name}");
+        collect_node_records(client, &child_path, name, "/", &mut nodes)?;
+    }
+    Ok(nodes)
+}
+
+fn collect_node_records(
+    client: &ZooKeeper,
+    path: &str,
+    name: String,
+    parent_path: &str,
+    result: &mut Vec<NodeRecord>,
+) -> Result<(), String> {
+    let children = client.get_children(path, false).map_err(map_zk_error)?;
+    result.push(NodeRecord::new(
+        path,
+        &name,
+        Some(parent_path.to_string()),
+        !children.is_empty(),
+    ));
+    for child_name in children {
+        let child_path = format!("{path}/{child_name}");
+        collect_node_records(client, &child_path, child_name, path, result)?;
+    }
+    Ok(())
+}
+
+fn child_path(parent_path: &str, child_name: &str) -> String {
+    if parent_path == "/" {
+        format!("/{child_name}")
+    } else {
+        format!("{parent_path}/{child_name}")
+    }
+}
+
+fn load_child_records(
+    client: &ZooKeeper,
+    parent_path: &str,
+    child_names: Vec<String>,
+) -> Result<Vec<NodeRecord>, String> {
+    child_names
+        .into_iter()
+        .map(|name| {
+            let path = child_path(parent_path, &name);
+            let nested_children = client.get_children(&path, false).map_err(map_zk_error)?;
+            Ok(NodeRecord::new(
+                &path,
+                &name,
+                Some(parent_path.to_string()),
+                !nested_children.is_empty(),
+            ))
+        })
+        .collect()
+}
+
+fn list_child_records_with_watch(watcher: &ChildrenWatcher) -> Result<Vec<NodeRecord>, String> {
+    let child_names = register_children_watch(watcher)?;
+    load_child_records(&watcher.client, &watcher.path, child_names)
+}
+
+fn seed_subtree_cache(watcher: &ChildrenWatcher, path: &str) -> Result<(), String> {
+    let branch_watcher = ChildrenWatcher {
+        client: Arc::clone(&watcher.client),
+        app_handle: watcher.app_handle.clone(),
+        connection_id: watcher.connection_id.clone(),
+        path: path.to_string(),
+        log_store: Arc::clone(&watcher.log_store),
+        active_paths: Arc::clone(&watcher.active_paths),
+        cache: Arc::clone(&watcher.cache),
+    };
+    let child_records = list_child_records_with_watch(&branch_watcher)?;
+    {
+        let mut cache = watcher.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.reconcile_children_preserving_expandability(path, child_records.clone());
+    }
+    for child in child_records {
+        seed_subtree_cache(watcher, &child.path)?;
+    }
+    Ok(())
+}
+
+fn refresh_cached_children(watcher: &ChildrenWatcher) -> Result<CacheChildDelta, String> {
+    let child_records = list_child_records_with_watch(watcher)?;
+    let current_child_paths = child_records
+        .iter()
+        .map(|child| child.path.clone())
+        .collect::<Vec<_>>();
+
+    let delta = {
+        let mut cache = watcher.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let delta = diff_cache_children(&cache, &watcher.path, &current_child_paths);
+        cache.reconcile_children(&watcher.path, child_records.clone());
+        delta
+    };
+
+    for child_path in &delta.added {
+        if let Err(error) = seed_subtree_cache(watcher, child_path) {
+            if let Some((message, meta)) = classify_missing_node_race(&error) {
+                append_watch_log(
+                    &watcher.log_store,
+                    &watcher.connection_id,
+                    "cache_seed_subtree",
+                    child_path,
+                    true,
+                    message,
+                    Some(meta),
+                    None,
+                );
+            } else {
+                append_watch_log(
+                    &watcher.log_store,
+                    &watcher.connection_id,
+                    "cache_seed_subtree",
+                    child_path,
+                    false,
+                    "failed to seed subtree cache".into(),
+                    None,
+                    Some(error),
+                );
+            }
+        }
+    }
+
+    Ok(delta)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CacheChildDelta {
+    added: Vec<String>,
+    removed: Vec<String>,
+}
+
+fn diff_cache_children(
+    cache: &ConnectionCache,
+    parent_path: &str,
+    current_child_paths: &[String],
+) -> CacheChildDelta {
+    let previous_child_paths = cache
+        .children_of(parent_path)
+        .into_iter()
+        .map(|node| node.path)
+        .collect::<std::collections::HashSet<_>>();
+    let current_child_paths = current_child_paths
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+
+    let mut added = current_child_paths
+        .difference(&previous_child_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut removed = previous_child_paths
+        .difference(&current_child_paths)
+        .cloned()
+        .collect::<Vec<_>>();
+    added.sort();
+    removed.sort();
+
+    CacheChildDelta { added, removed }
+}
+
+fn map_cache_event_type(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "snapshot_ready" => Some("snapshot_ready"),
+        "nodes_added" => Some("nodes_added"),
+        "nodes_removed" => Some("nodes_removed"),
+        "nodes_updated" => Some("nodes_updated"),
+        "resync_completed" => Some("resync_completed"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,5 +1181,52 @@ mod tests {
     #[test]
     fn leaves_non_no_node_errors_unclassified() {
         assert!(classify_missing_node_race("ConnectionLoss").is_none());
+    }
+
+    #[test]
+    fn mark_cache_resyncing_sets_transitional_status() {
+        let cache = Arc::new(std::sync::Mutex::new(ConnectionCache::new()));
+        mark_cache_resyncing(&cache);
+
+        let snapshot = cache.lock().unwrap_or_else(|e| e.into_inner()).to_snapshot();
+        assert_eq!(snapshot.status, "resyncing");
+    }
+
+    #[test]
+    fn cache_event_types_are_exposed_for_frontend_projection() {
+        assert_eq!(map_cache_event_type("snapshot_ready"), Some("snapshot_ready"));
+        assert_eq!(map_cache_event_type("nodes_added"), Some("nodes_added"));
+        assert_eq!(map_cache_event_type("nodes_removed"), Some("nodes_removed"));
+    }
+
+    #[test]
+    fn cache_children_are_diffed_against_the_existing_subtree_cache() {
+        let mut cache = ConnectionCache::new();
+        cache.upsert_children(
+            "/",
+            vec![
+                NodeRecord::new("/old", "old", Some("/".into()), false),
+                NodeRecord::new("/stay", "stay", Some("/".into()), false),
+            ],
+        );
+
+        let delta = diff_cache_children(
+            &cache,
+            "/",
+            &vec!["/stay".to_string(), "/new".to_string()],
+        );
+
+        assert_eq!(delta.added, vec!["/new".to_string()]);
+        assert_eq!(delta.removed, vec!["/old".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_ready_cache_event_uses_empty_payload() {
+        let event = snapshot_ready_cache_event("conn-a");
+
+        assert_eq!(event.connection_id, "conn-a");
+        assert_eq!(event.event_type, "snapshot_ready");
+        assert_eq!(event.parent_path, None);
+        assert!(event.paths.is_empty());
     }
 }

@@ -36,6 +36,30 @@ impl ZkLogStore {
         }
     }
 
+    pub fn append_operation(
+        &self,
+        connection_id: Option<&str>,
+        operation: &str,
+        path: Option<&str>,
+        success: bool,
+        message: &str,
+        error: Option<String>,
+        meta: Option<serde_json::Value>,
+    ) {
+        self.append(&ZkLogEntry {
+            timestamp: current_millis(),
+            level: if success { "DEBUG".into() } else { "ERROR".into() },
+            connection_id: connection_id.map(|value| value.to_string()),
+            operation: operation.to_string(),
+            path: path.map(|value| value.to_string()),
+            success,
+            duration_ms: 0,
+            message: message.to_string(),
+            error,
+            meta,
+        });
+    }
+
     /// Read the most recent `limit` entries. Returns newest-first.
     /// Corrupted lines are silently skipped.
     pub fn read_recent(&self, limit: usize) -> Result<Vec<ZkLogEntry>, String> {
@@ -94,6 +118,13 @@ impl ZkLogStore {
         }
         Ok(entries)
     }
+}
+
+fn current_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 #[cfg(test)]

@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ConnectionResult, NodeDetails, NodeTreeItem, ZkLogEntry } from "./types";
+import type {
+  ConnectionResult,
+  NodeDetails,
+  NodeTreeItem,
+  TreeSnapshot,
+  ZkLogEntry,
+} from "./types";
 
 export async function connectServer(
   connectionId: string,
@@ -31,6 +37,10 @@ export async function getNodeDetails(
   path: string
 ): Promise<NodeDetails> {
   return invoke("get_node_details", { connectionId, path });
+}
+
+export async function getTreeSnapshot(connectionId: string): Promise<TreeSnapshot> {
+  return invoke("get_tree_snapshot", { connectionId });
 }
 
 export async function saveNode(

@@ -3,17 +3,26 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { usePersistedConnections } from "./use-persisted-connections";
 import { useSessionManager } from "./use-session-manager";
 import { useNodeSearch } from "./use-node-search";
+import { buildProjectedTree } from "./use-tree-projection";
 import {
   connectServer,
   disconnectServer as disconnectServerCmd,
   createNode as createNodeCmd,
   deleteNode as deleteNodeCmd,
   getNodeDetails,
+  getTreeSnapshot,
   listChildren,
   loadFullTree as loadFullTreeCmd,
   saveNode,
 } from "../lib/commands";
-import type { NodeTreeItem, RibbonMode, WatchEvent } from "../lib/types";
+import type {
+  ActiveSession,
+  CacheEvent,
+  NodeTreeItem,
+  RibbonMode,
+  TreeSnapshot,
+  WatchEvent,
+} from "../lib/types";
 
 /** Returns the ancestor paths that must be expanded to make `path` visible in the tree.
  *  e.g. "/a/b/c" → ["/a", "/a/b"] */
@@ -93,6 +102,15 @@ function removeNode(nodes: NodeTreeItem[], targetPath: string): NodeTreeItem[] {
     });
 }
 
+function pruneExpandedPaths(expandedPaths: Set<string>, targetPath: string): Set<string> {
+  const next = new Set<string>();
+  for (const path of expandedPaths) {
+    if (path === targetPath || path.startsWith(`${targetPath}/`)) continue;
+    next.add(path);
+  }
+  return next;
+}
+
 function updateNodeHasChildren(
   nodes: NodeTreeItem[],
   targetPath: string,
@@ -130,12 +148,29 @@ type EnsureChildrenResult = {
   addedPaths: string[];
 };
 
-export const RECENT_LEAF_PROBE_WINDOW_MS = 1500;
-export const LEAF_REPROBE_DELAY_MS = 400;
+function treeNodesToSnapshotNodes(
+  nodes: NodeTreeItem[],
+  parentPath: string | null,
+  knownExpandablePaths?: Set<string>
+): TreeSnapshot["nodes"] {
+  const snapshotNodes: TreeSnapshot["nodes"] = [];
+  for (const node of nodes) {
+    snapshotNodes.push({
+      path: node.path,
+      name: node.name,
+      parentPath,
+      hasChildren: Boolean(node.hasChildren || node.children?.length || knownExpandablePaths?.has(node.path)),
+    });
+    if (node.children?.length) {
+      snapshotNodes.push(...treeNodesToSnapshotNodes(node.children, node.path, knownExpandablePaths));
+    }
+  }
+  return snapshotNodes;
+}
 
-type RecentLeafProbe = {
-  firstSeenAt: number;
-};
+function shouldReplaceSnapshot(existing: TreeSnapshot | undefined, next: TreeSnapshot): boolean {
+  return true;
+}
 
 export function useWorkbenchState() {
   const [ribbonMode, setRibbonMode] = useState<RibbonMode>("connections");
@@ -153,14 +188,9 @@ export function useWorkbenchState() {
 
   const nodeSearch = useNodeSearch(activeTabId);
   const unlistenRefs = useRef<Map<string, () => void>>(new Map());
+  const cacheUnlistenRefs = useRef<Map<string, () => void>>(new Map());
   const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
-  // Prevents concurrent getNodeDetails for the same path (distinct from pendingChildRefreshRefs which guards listChildren)
-  const pendingProbeRefs = useRef<Map<string, Set<string>>>(new Map());
-  // Maps connectionId → (path → firstSeenAt) for nodes that returned childrenCount=0 on probe
-  const recentLeafProbeRefs = useRef<Map<string, Map<string, RecentLeafProbe>>>(new Map());
-  const scheduledLeafProbeRefs = useRef<
-    Map<string, Map<string, ReturnType<typeof setTimeout>>>
-  >(new Map());
+  const cacheSnapshotsRef = useRef<Map<string, TreeSnapshot>>(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
@@ -168,6 +198,17 @@ export function useWorkbenchState() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
   const [indexingConnections, setIndexingConnections] = useState<Set<string>>(new Set());
+  const [, setCacheSnapshotVersion] = useState(0);
+  const sessionsRef = useRef(sessions);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  function commitSession(connectionId: string, nextSession: ActiveSession) {
+    sessionsRef.current = new Map(sessionsRef.current).set(connectionId, nextSession);
+    updateSession(connectionId, () => nextSession);
+  }
 
   // Force connections mode when all sessions are closed
   useEffect(() => {
@@ -182,18 +223,28 @@ export function useWorkbenchState() {
         unlisten();
       }
       unlistenRefs.current.clear();
-      for (const timers of scheduledLeafProbeRefs.current.values()) {
-        for (const timer of timers.values()) {
-          clearTimeout(timer);
-        }
+      for (const unlisten of cacheUnlistenRefs.current.values()) {
+        unlisten();
       }
-      scheduledLeafProbeRefs.current.clear();
+      cacheUnlistenRefs.current.clear();
     };
   }, []);
 
+  function syncCacheSnapshot(connectionId: string, treeNodes: NodeTreeItem[]) {
+    const existing = cacheSnapshotsRef.current.get(connectionId);
+    const knownExpandablePaths = existing
+      ? new Set(existing.nodes.filter((node) => node.hasChildren).map((node) => node.path))
+      : undefined;
+    cacheSnapshotsRef.current.set(connectionId, {
+      status: existing?.status ?? "live",
+      nodes: treeNodesToSnapshotNodes(treeNodes, "/", knownExpandablePaths),
+    });
+    setCacheSnapshotVersion((version) => version + 1);
+  }
+
   const handleWatchEvent = useEffectEvent(async (event: WatchEvent) => {
     console.debug("[zk-watch-event] received", event);
-    const session = sessions.get(event.connectionId);
+    const session = sessionsRef.current.get(event.connectionId);
     if (!session) return;
 
     if (event.eventType === "children_changed" || event.eventType === "node_created") {
@@ -202,12 +253,7 @@ export function useWorkbenchState() {
       pending.add(event.path);
       pendingChildRefreshRefs.current.set(event.connectionId, pending);
       try {
-        const result = await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
-        if (result) {
-          if (result.addedPaths.length) {
-            await probeFreshNodes(event.connectionId, result.addedPaths);
-          }
-        }
+        await ensureChildrenLoaded(event.connectionId, event.path, { force: true });
       } finally {
         const next = pendingChildRefreshRefs.current.get(event.connectionId);
         next?.delete(event.path);
@@ -242,115 +288,21 @@ export function useWorkbenchState() {
 
     if (event.eventType === "node_deleted") {
       nodeSearch.removeSubtree(event.connectionId, event.path);
-      updateSession(event.connectionId, (current) => ({
-        ...current,
-        treeNodes: removeNode(current.treeNodes, event.path),
-        activePath: current.activePath === event.path ? null : current.activePath,
-        activeNode: current.activePath === event.path ? null : current.activeNode,
-      }));
-      clearRecentLeafProbe(event.connectionId, event.path);
+      const current = sessionsRef.current.get(event.connectionId);
+      if (current) {
+        const nextTree = removeNode(current.treeNodes, event.path);
+        commitSession(event.connectionId, {
+          ...current,
+          treeNodes: nextTree,
+          expandedPaths: pruneExpandedPaths(current.expandedPaths, event.path),
+          activePath: current.activePath === event.path ? null : current.activePath,
+          activeNode: current.activePath === event.path ? null : current.activeNode,
+        });
+        syncCacheSnapshot(event.connectionId, nextTree);
+      }
       await ensureChildrenLoaded(event.connectionId, getParentPath(event.path), { force: true });
     }
   });
-
-  const PROBE_CONCURRENCY = 5;
-
-  function clearScheduledLeafProbe(connectionId: string, path: string) {
-    const timers = scheduledLeafProbeRefs.current.get(connectionId);
-    const timer = timers?.get(path);
-    if (timer) {
-      clearTimeout(timer);
-      timers?.delete(path);
-    }
-    if (timers && timers.size === 0) {
-      scheduledLeafProbeRefs.current.delete(connectionId);
-    }
-  }
-
-  function clearRecentLeafProbe(connectionId: string, path: string) {
-    recentLeafProbeRefs.current.get(connectionId)?.delete(path);
-    if (recentLeafProbeRefs.current.get(connectionId)?.size === 0) {
-      recentLeafProbeRefs.current.delete(connectionId);
-    }
-    clearScheduledLeafProbe(connectionId, path);
-  }
-
-  function scheduleLeafReprobe(connectionId: string, path: string) {
-    const recent = recentLeafProbeRefs.current.get(connectionId)?.get(path);
-    if (!recent) return;
-    if (Date.now() - recent.firstSeenAt >= RECENT_LEAF_PROBE_WINDOW_MS) {
-      clearRecentLeafProbe(connectionId, path);
-      return;
-    }
-
-    const timers = scheduledLeafProbeRefs.current.get(connectionId) ?? new Map();
-    if (timers.has(path)) return;
-
-    const timer = setTimeout(() => {
-      clearScheduledLeafProbe(connectionId, path);
-      const activeProbe = recentLeafProbeRefs.current.get(connectionId)?.get(path);
-      if (!activeProbe) return;
-      if (Date.now() - activeProbe.firstSeenAt >= RECENT_LEAF_PROBE_WINDOW_MS) {
-        clearRecentLeafProbe(connectionId, path);
-        return;
-      }
-      void probeFreshNodes(connectionId, [path]);
-    }, LEAF_REPROBE_DELAY_MS);
-
-    timers.set(path, timer);
-    scheduledLeafProbeRefs.current.set(connectionId, timers);
-  }
-
-  async function probeFreshNodes(connectionId: string, paths: string[]): Promise<void> {
-    if (paths.length === 0) return;
-    const pending = pendingProbeRefs.current.get(connectionId) ?? new Set<string>();
-    pendingProbeRefs.current.set(connectionId, pending);
-
-    const pathsToProbe = paths.filter((p) => !pending.has(p));
-    for (const p of pathsToProbe) pending.add(p);
-
-    try {
-      for (let i = 0; i < pathsToProbe.length; i += PROBE_CONCURRENCY) {
-        const batch = pathsToProbe.slice(i, i + PROBE_CONCURRENCY);
-        await Promise.all(
-          batch.map(async (path) => {
-            try {
-              const details = await getNodeDetails(connectionId, path);
-              if (details.childrenCount > 0) {
-                // Has children — update tree and clear from observation window
-                updateSession(connectionId, (s) => ({
-                  ...s,
-                  treeNodes: patchNodeMeta(s.treeNodes, path, { hasChildren: true }),
-                }));
-                nodeSearch.patchNodeMeta(connectionId, path, { hasChildren: true });
-                clearRecentLeafProbe(connectionId, path);
-              } else {
-                // No children yet — record timestamp for observation window
-                const connLeaves =
-                  recentLeafProbeRefs.current.get(connectionId) ?? new Map<string, RecentLeafProbe>();
-                const existing = connLeaves.get(path);
-                connLeaves.set(path, existing ?? { firstSeenAt: Date.now() });
-                recentLeafProbeRefs.current.set(connectionId, connLeaves);
-                scheduleLeafReprobe(connectionId, path);
-              }
-            } catch (error) {
-              if (!isNoNodeError(error)) {
-                console.warn("[probeFreshNodes] unexpected error probing", path, error);
-              }
-              // NoNode = race condition, silently ignored
-              clearRecentLeafProbe(connectionId, path);
-            } finally {
-              pending.delete(path);
-            }
-          })
-        );
-      }
-    } finally {
-      if (pending.size === 0) {
-        pendingProbeRefs.current.delete(connectionId);
-      }
-    }
-  }
 
   async function ensureWatchListener(connectionId: string) {
     if (unlistenRefs.current.has(connectionId)) return;
@@ -363,6 +315,42 @@ export function useWorkbenchState() {
     unlistenRefs.current.set(connectionId, () => {
       void unlisten();
     });
+  }
+
+  async function ensureCacheListener(connectionId: string) {
+    if (cacheUnlistenRefs.current.has(connectionId)) return;
+    const handler = (event: { payload: CacheEvent }) => {
+      if (event.payload.connectionId !== connectionId) return;
+      void getTreeSnapshot(connectionId)
+        .then((snapshot) => {
+          const existing = cacheSnapshotsRef.current.get(connectionId);
+          if (shouldReplaceSnapshot(existing, snapshot)) {
+            cacheSnapshotsRef.current.set(connectionId, snapshot);
+            setCacheSnapshotVersion((version) => version + 1);
+          }
+        })
+        .catch(() => {
+          // snapshot failure should not block existing tree flow
+        });
+    };
+
+    const unlisten = await getCurrentWebviewWindow().listen<CacheEvent>("zk-cache-event", handler);
+    cacheUnlistenRefs.current.set(connectionId, () => {
+      void unlisten();
+    });
+  }
+
+  async function cacheTreeSnapshot(connectionId: string) {
+    try {
+      const snapshot = await getTreeSnapshot(connectionId);
+      const existing = cacheSnapshotsRef.current.get(connectionId);
+      if (shouldReplaceSnapshot(existing, snapshot)) {
+        cacheSnapshotsRef.current.set(connectionId, snapshot);
+        setCacheSnapshotVersion((version) => version + 1);
+      }
+    } catch {
+      // snapshot failure should not block existing tree flow
+    }
   }
 
   async function submitConnection(params: {
@@ -385,10 +373,14 @@ export function useWorkbenchState() {
       addSession(conn, rootNodes);
       nodeSearch.indexNodes(params.connectionId, "/", rootNodes);
       setRibbonMode("browse");
+      void cacheTreeSnapshot(params.connectionId);
       void ensureWatchListener(params.connectionId).catch((error) => {
         setConnectionError(
           error instanceof Error ? `watch listener 注册失败: ${error.message}` : "watch listener 注册失败"
         );
+      });
+      void ensureCacheListener(params.connectionId).catch(() => {
+        // cache listener setup is best-effort and must not surface as a user-facing connection error
       });
 
       // Background: recursively fetch the full tree so all nodes are searchable,
@@ -449,16 +441,10 @@ export function useWorkbenchState() {
   async function disconnectSession(connectionId: string) {
     unlistenRefs.current.get(connectionId)?.();
     unlistenRefs.current.delete(connectionId);
+    cacheUnlistenRefs.current.get(connectionId)?.();
+    cacheUnlistenRefs.current.delete(connectionId);
+    cacheSnapshotsRef.current.delete(connectionId);
     pendingChildRefreshRefs.current.delete(connectionId);
-    pendingProbeRefs.current.delete(connectionId);
-    recentLeafProbeRefs.current.delete(connectionId);
-    const timers = scheduledLeafProbeRefs.current.get(connectionId);
-    if (timers) {
-      for (const timer of timers.values()) {
-        clearTimeout(timer);
-      }
-      scheduledLeafProbeRefs.current.delete(connectionId);
-    }
     try {
       await disconnectServerCmd(connectionId);
     } catch {
@@ -473,7 +459,7 @@ export function useWorkbenchState() {
     path: string,
     options?: { force?: boolean }
   ): Promise<EnsureChildrenResult | undefined> {
-    const session = sessions.get(connectionId);
+    const session = sessionsRef.current.get(connectionId);
     if (!session) return undefined;
     if (path !== "/") {
       const targetNode = findNode(session.treeNodes, path);
@@ -496,22 +482,23 @@ export function useWorkbenchState() {
 
     try {
       const children = await listChildren(connectionId, path);
-      updateSession(connectionId, (s) => {
-        const newTree = replaceChildren(s.treeNodes, path, children);
-        const patchedTree =
-          path === "/"
-            ? newTree
-            : patchNodeMeta(newTree, path, { hasChildren: children.length > 0 });
-        return {
-          ...s,
-          treeNodes: patchedTree,
-          loadingPaths: (() => {
-            const next = new Set(s.loadingPaths);
-            next.delete(path);
-            return next;
-          })(),
-        };
+      const current = sessionsRef.current.get(connectionId);
+      if (!current) return undefined;
+      const newTree = replaceChildren(current.treeNodes, path, children);
+      const patchedTree =
+        path === "/"
+          ? newTree
+          : patchNodeMeta(newTree, path, { hasChildren: children.length > 0 });
+      commitSession(connectionId, {
+        ...current,
+        treeNodes: patchedTree,
+        loadingPaths: (() => {
+          const next = new Set(current.loadingPaths);
+          next.delete(path);
+          return next;
+        })(),
       });
+      syncCacheSnapshot(connectionId, patchedTree);
       nodeSearch.indexNodes(connectionId, path, children);
 
       const addedPaths = children
@@ -524,6 +511,7 @@ export function useWorkbenchState() {
       updateSession(connectionId, (s) => ({
         ...s,
         treeNodes: isDeletedDuringRefresh ? removeNode(s.treeNodes, path) : s.treeNodes,
+        expandedPaths: isDeletedDuringRefresh ? pruneExpandedPaths(s.expandedPaths, path) : s.expandedPaths,
         activePath: isDeletedDuringRefresh && s.activePath === path ? null : s.activePath,
         activeNode: isDeletedDuringRefresh && s.activePath === path ? null : s.activeNode,
         loadingPaths: (() => {
@@ -545,29 +533,33 @@ export function useWorkbenchState() {
   async function doOpenNode(path: string) {
     if (!activeTabId) return;
     setSaveError(null);
-    const session = sessions.get(activeTabId)!;
+    const session = sessionsRef.current.get(activeTabId);
+    if (!session) return;
     const node = findNode(session.treeNodes, path);
 
     if (node?.hasChildren) {
-      updateSession(activeTabId, (s) => ({
-        ...s,
-        expandedPaths: new Set(s.expandedPaths).add(path),
-      }));
+      commitSession(activeTabId, {
+        ...session,
+        expandedPaths: new Set(session.expandedPaths).add(path),
+      });
       await ensureChildrenLoaded(activeTabId, path);
     }
 
     try {
       const nodeDetails = await getNodeDetails(activeTabId, path);
       const hasChildren = nodeDetails.childrenCount > 0;
-      updateSession(activeTabId, (s) => ({
-        ...s,
-        treeNodes: updateNodeHasChildren(s.treeNodes, path, hasChildren),
+      const currentSession = sessionsRef.current.get(activeTabId);
+      if (!currentSession) return;
+      const nextSession = {
+        ...currentSession,
+        treeNodes: updateNodeHasChildren(currentSession.treeNodes, path, hasChildren),
         expandedPaths: hasChildren
-          ? new Set(s.expandedPaths).add(path)
-          : s.expandedPaths,
+          ? new Set(currentSession.expandedPaths).add(path)
+          : currentSession.expandedPaths,
         activePath: path,
         activeNode: nodeDetails,
-      }));
+      };
+      commitSession(activeTabId, nextSession);
       if (hasChildren) {
         await ensureChildrenLoaded(activeTabId, path, { force: true });
       }
@@ -604,22 +596,21 @@ export function useWorkbenchState() {
 
   async function toggleNode(path: string) {
     if (!activeTabId) return;
-    const session = sessions.get(activeTabId)!;
+    const session = sessionsRef.current.get(activeTabId);
+    if (!session) return;
     const isExpanded = session.expandedPaths.has(path);
 
     if (isExpanded) {
-      updateSession(activeTabId, (s) => {
-        const next = new Set(s.expandedPaths);
-        next.delete(path);
-        return { ...s, expandedPaths: next };
-      });
+      const next = new Set(session.expandedPaths);
+      next.delete(path);
+      commitSession(activeTabId, { ...session, expandedPaths: next });
       return;
     }
 
-    updateSession(activeTabId, (s) => ({
-      ...s,
-      expandedPaths: new Set(s.expandedPaths).add(path),
-    }));
+    commitSession(activeTabId, {
+      ...session,
+      expandedPaths: new Set(session.expandedPaths).add(path),
+    });
     await ensureChildrenLoaded(activeTabId, path);
   }
 
@@ -738,13 +729,17 @@ export function useWorkbenchState() {
       treeNodes: workingNodes,
       expandedPaths: new Set([...s.expandedPaths, ...ancestors]),
     }));
+    syncCacheSnapshot(connId, workingNodes);
 
     nodeSearch.setSearchQuery("");
     await doOpenNode(path);
   }
 
   // Derive current session's state for App.tsx consumption
-  const treeNodes = activeSession?.treeNodes ?? [];
+  const cachedSnapshot = activeTabId ? cacheSnapshotsRef.current.get(activeTabId) ?? null : null;
+  const treeNodes = cachedSnapshot
+    ? buildProjectedTree(cachedSnapshot, activeSession?.expandedPaths ?? new Set<string>())
+    : activeSession?.treeNodes ?? [];
   const expandedPaths = activeSession?.expandedPaths ?? new Set<string>();
   const loadingPaths = activeSession?.loadingPaths ?? new Set<string>();
   const activePath = activeSession?.activePath ?? null;
@@ -753,6 +748,9 @@ export function useWorkbenchState() {
   const draft = activePath ? drafts[activePath] : undefined;
   const editingPaths = activeSession?.editingPaths ?? new Set<string>();
   const isEditing = activePath ? editingPaths.has(activePath) : false;
+  const cacheStatus = activeTabId
+    ? cacheSnapshotsRef.current.get(activeTabId)?.status ?? "stale"
+    : "stale";
 
   return {
     ribbonMode,
@@ -803,6 +801,7 @@ export function useWorkbenchState() {
     searchResults: nodeSearch.searchResults,
     searchMode: nodeSearch.searchMode,
     isIndexing: activeTabId ? indexingConnections.has(activeTabId) : false,
+    cacheStatus,
     locate,
   };
 }

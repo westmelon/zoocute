@@ -4,10 +4,9 @@ pub mod logging;
 pub mod zk_core;
 
 use commands::{
-    connect_server, disconnect_server,
-    create_node, delete_node, get_node_details, list_children, save_node,
-    load_full_tree,
-    read_zk_logs, clear_zk_logs,
+    clear_zk_logs, connect_server, create_node, delete_node, disconnect_server,
+    get_node_details, get_tree_snapshot, list_children, load_full_tree, read_zk_logs,
+    save_node,
     AppState,
 };
 
@@ -31,6 +30,7 @@ pub fn run() {
             disconnect_server,
             list_children,
             get_node_details,
+            get_tree_snapshot,
             save_node,
             create_node,
             delete_node,

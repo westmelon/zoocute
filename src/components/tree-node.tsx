@@ -26,7 +26,7 @@ export function TreeNode({
   const canExpand = Boolean(node.hasChildren || node.children?.length);
   const children = node.children ?? [];
   const shouldShowChildren = isExpanded && children.length > 0;
-  const shouldShowSkeleton = isExpanded && isLoading;
+  const shouldShowSkeleton = isExpanded && isLoading && children.length === 0;
 
   return (
     <li>
