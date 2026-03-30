@@ -25,7 +25,7 @@ import type {
 } from "../lib/types";
 
 /** Returns the ancestor paths that must be expanded to make `path` visible in the tree.
- *  e.g. "/a/b/c" → ["/a", "/a/b"] */
+ *  e.g. "/a/b/c" -> ["/a", "/a/b"] */
 function buildAncestors(path: string): string[] {
   const parts = path.split("/").filter(Boolean);
   const result: string[] = [];
@@ -68,7 +68,7 @@ function replaceChildren(
   parentPath: string,
   children: NodeTreeItem[]
 ): NodeTreeItem[] {
-  // Like mergeChildren but does NOT modify hasChildren — that's patchNodeMeta's job
+  // Like mergeChildren but does NOT modify hasChildren; patchNodeMeta updates that separately.
   if (parentPath === "/") return children;
   return nodes.map((node) => {
     if (node.path === parentPath) {
@@ -141,6 +141,27 @@ function isNoNodeError(error: unknown): boolean {
     return error.includes("NoNode") || error.includes("no node");
   }
   return false;
+}
+
+function extractErrorMessage(error: unknown): string | null {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return null;
+}
+
+function formatConnectionError(error: unknown): string {
+  const message = extractErrorMessage(error);
+  if (!message) return "\u8fde\u63a5\u5931\u8d25";
+  if (message.includes("NoAuth") || message.includes("AuthFailed")) {
+    return "\u8ba4\u8bc1\u5931\u8d25\uff1a\u8d26\u53f7\u6216\u5bc6\u7801\u9519\u8bef\uff0c\u6216\u5f53\u524d\u8d26\u53f7\u6ca1\u6709\u8bbf\u95ee\u6839\u8282\u70b9\u7684\u6743\u9650\u3002\u8bf7\u68c0\u67e5\u7528\u6237\u540d\u3001\u5bc6\u7801\uff0c\u5e76\u786e\u8ba4\u5df2\u4fdd\u5b58\u6700\u65b0\u914d\u7f6e\u3002";
+  }
+  if (message.includes("Timeout")) {
+    return "\u8fde\u63a5\u8d85\u65f6\uff1a\u8bf7\u68c0\u67e5\u8fde\u63a5\u5730\u5740\u548c ZooKeeper \u670d\u52a1\u662f\u5426\u53ef\u8fbe\u3002";
+  }
+  if (message.includes("empty connect string")) {
+    return "\u8fde\u63a5\u5730\u5740\u4e0d\u80fd\u4e3a\u7a7a\u3002";
+  }
+  return message;
 }
 
 type EnsureChildrenResult = {
@@ -362,12 +383,14 @@ export function useWorkbenchState() {
     setIsConnecting(true);
     setConnectionError(null);
     setConnectionNotice(null);
+    let connected = false;
     try {
       await connectServer(params.connectionId, {
         connectionString: params.connectionString,
         username: params.username || undefined,
         password: params.password || undefined,
       });
+      connected = true;
       const rootNodes = await listChildren(params.connectionId, "/");
       const conn = savedConnections.find((c) => c.id === params.connectionId)!;
       addSession(conn, rootNodes);
@@ -389,7 +412,7 @@ export function useWorkbenchState() {
       setIndexingConnections((prev) => new Set([...prev, connId]));
       loadFullTreeCmd(connId)
         .then((allNodes) => nodeSearch.bulkIndex(connId, allNodes))
-        .catch(() => { /* partial index is still useful — silently ignore */ })
+        .catch(() => { /* partial index is still useful; silently ignore */ })
         .finally(() => {
           setIndexingConnections((prev) => {
             const next = new Set(prev);
@@ -398,7 +421,16 @@ export function useWorkbenchState() {
           });
         });
     } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : "连接失败");
+      if (connected) {
+        cacheSnapshotsRef.current.delete(params.connectionId);
+        pendingChildRefreshRefs.current.delete(params.connectionId);
+        try {
+          await disconnectServerCmd(params.connectionId);
+        } catch {
+          // best-effort cleanup after a partially successful connection attempt
+        }
+      }
+      setConnectionError(formatConnectionError(error));
     } finally {
       setIsConnecting(false);
     }
@@ -419,9 +451,10 @@ export function useWorkbenchState() {
         username: params.username || undefined,
         password: params.password || undefined,
       });
+      await listChildren(params.connectionId, "/");
       setConnectionNotice("连接测试成功");
     } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : "连接测试失败");
+      setConnectionError(formatConnectionError(error));
       return;
     } finally {
       try {
@@ -468,7 +501,7 @@ export function useWorkbenchState() {
       if (!options?.force && targetNode.children) return undefined;
     }
 
-    // Snapshot current children BEFORE the await — used for addedPaths diff
+    // Snapshot current children BEFORE the await; used for addedPaths diff
     const prevPaths = new Set(
       path === "/"
         ? session.treeNodes.map((n) => n.path)
@@ -706,7 +739,7 @@ export function useWorkbenchState() {
     const ancestors = buildAncestors(path);
 
     // Build a local working tree so we don't depend on React state
-    // being flushed between each await — sessions is a stale closure.
+    // being flushed between each await; sessions is a stale closure.
     const session = sessions.get(connId);
     if (!session) return;
     let workingNodes = session.treeNodes;
@@ -719,7 +752,7 @@ export function useWorkbenchState() {
         workingNodes = mergeChildren(workingNodes, ancestor, children);
         nodeSearch.indexNodes(connId, ancestor, children);
       } catch {
-        // best-effort — continue even if one level fails
+        // best-effort; continue even if one level fails
       }
     }
 
@@ -805,3 +838,5 @@ export function useWorkbenchState() {
     locate,
   };
 }
+
+

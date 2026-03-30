@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "ZooCute",
-        "width": 1440,
-        "height": 960,
+        "width": 1024,
+        "height": 780,
         "resizable": true
       }
     ],
@@ -25,6 +25,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": []
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
   }
 }

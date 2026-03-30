@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter, Wry};
-use zookeeper::{Acl, CreateMode, WatchedEventType, Watcher, WatchedEvent, ZooKeeper};
+use tauri::{async_runtime, AppHandle, Emitter, Wry};
+use zookeeper_client::{Acls, Client, CreateMode, EventType, OneshotWatcher, WatchedEvent};
 
 use crate::domain::{
     CacheEventDto, ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
@@ -16,7 +16,7 @@ use crate::zk_core::interpreter::{hex_encode, interpret_data};
 
 #[derive(Clone)]
 pub struct LiveAdapter {
-    client: Arc<ZooKeeper>,
+    client: Arc<Client>,
     connection_id: String,
     log_store: Arc<ZkLogStore>,
     app_handle: AppHandle<Wry>,
@@ -25,11 +25,9 @@ pub struct LiveAdapter {
     cache: Arc<std::sync::Mutex<ConnectionCache>>,
 }
 
-struct NoopWatcher;
-
 #[derive(Clone)]
 struct ChildrenWatcher {
-    client: Arc<ZooKeeper>,
+    client: Arc<Client>,
     app_handle: AppHandle<Wry>,
     connection_id: String,
     path: String,
@@ -40,196 +38,12 @@ struct ChildrenWatcher {
 
 #[derive(Clone)]
 struct DataWatcher {
-    client: Arc<ZooKeeper>,
+    client: Arc<Client>,
     app_handle: AppHandle<Wry>,
     connection_id: String,
     path: String,
     log_store: Arc<ZkLogStore>,
     active_paths: Arc<std::sync::Mutex<HashSet<String>>>,
-}
-
-impl Watcher for NoopWatcher {
-    fn handle(&self, _event: WatchedEvent) {}
-}
-
-impl Watcher for ChildrenWatcher {
-    fn handle(&self, event: WatchedEvent) {
-        clear_active_watch(&self.active_paths, &self.path);
-        append_watch_log(
-            &self.log_store,
-            &self.connection_id,
-            "watch_children_triggered",
-            &self.path,
-            true,
-            "children watch triggered".into(),
-            Some(serde_json::json!({
-                "rawEventType": format!("{:?}", event.event_type),
-                "keeperState": format!("{:?}", event.keeper_state),
-            })),
-            None,
-        );
-
-        let Some((event_type, should_reregister)) = map_children_watch_event(event.event_type) else {
-            return;
-        };
-
-        emit_watch_event(
-            &self.app_handle,
-            &self.connection_id,
-            event_type,
-            &self.path,
-        );
-        append_watch_log(
-            &self.log_store,
-            &self.connection_id,
-            "watch_emit",
-            &self.path,
-            true,
-            format!("emitted {event_type}"),
-            None,
-            None,
-        );
-
-        if should_reregister {
-            let watcher = self.clone();
-            std::thread::spawn(move || {
-                let result = if event_type == "children_changed" {
-                    refresh_cached_children(&watcher)
-                } else {
-                    register_children_watch(&watcher).map(|_| CacheChildDelta {
-                        added: Vec::new(),
-                        removed: Vec::new(),
-                    })
-                };
-                match result {
-                    Ok(delta) => {
-                        if !delta.added.is_empty() {
-                            emit_cache_event(
-                                &watcher.app_handle,
-                                &watcher.connection_id,
-                                "nodes_added",
-                                Some(&watcher.path),
-                                delta.added,
-                            );
-                        }
-                        if !delta.removed.is_empty() {
-                            emit_cache_event(
-                                &watcher.app_handle,
-                                &watcher.connection_id,
-                                "nodes_removed",
-                                Some(&watcher.path),
-                                delta.removed,
-                            );
-                        }
-                        append_watch_log(
-                            &watcher.log_store,
-                            &watcher.connection_id,
-                            "watch_reregister_children",
-                            &watcher.path,
-                            true,
-                            "re-registered children watch".into(),
-                            None,
-                            None,
-                        )
-                    }
-                    Err(error) => {
-                        if let Some((message, meta)) = classify_missing_node_race(&error) {
-                            append_watch_log(
-                                &watcher.log_store,
-                                &watcher.connection_id,
-                                "watch_reregister_children",
-                                &watcher.path,
-                                true,
-                                message,
-                                Some(meta),
-                                None,
-                            );
-                        } else {
-                            append_watch_log(
-                                &watcher.log_store,
-                                &watcher.connection_id,
-                                "watch_reregister_children",
-                                &watcher.path,
-                                false,
-                                "failed to re-register children watch".into(),
-                                None,
-                                Some(error),
-                            );
-                        }
-                    }
-                }
-            });
-        }
-    }
-}
-
-impl Watcher for DataWatcher {
-    fn handle(&self, event: WatchedEvent) {
-        clear_active_watch(&self.active_paths, &self.path);
-        append_watch_log(
-            &self.log_store,
-            &self.connection_id,
-            "watch_data_triggered",
-            &self.path,
-            true,
-            "data watch triggered".into(),
-            Some(serde_json::json!({
-                "rawEventType": format!("{:?}", event.event_type),
-                "keeperState": format!("{:?}", event.keeper_state),
-            })),
-            None,
-        );
-
-        let Some((event_type, should_reregister)) = map_data_watch_event(event.event_type) else {
-            return;
-        };
-
-        emit_watch_event(
-            &self.app_handle,
-            &self.connection_id,
-            event_type,
-            &self.path,
-        );
-        append_watch_log(
-            &self.log_store,
-            &self.connection_id,
-            "watch_emit",
-            &self.path,
-            true,
-            format!("emitted {event_type}"),
-            None,
-            None,
-        );
-
-        if should_reregister {
-            let watcher = self.clone();
-            std::thread::spawn(move || {
-                let result = register_data_watch(&watcher).map(|_| ());
-                match result {
-                    Ok(_) => append_watch_log(
-                        &watcher.log_store,
-                        &watcher.connection_id,
-                        "watch_reregister_data",
-                        &watcher.path,
-                        true,
-                        "re-registered data watch".into(),
-                        None,
-                        None,
-                    ),
-                    Err(error) => append_watch_log(
-                        &watcher.log_store,
-                        &watcher.connection_id,
-                        "watch_reregister_data",
-                        &watcher.path,
-                        false,
-                        "failed to re-register data watch".into(),
-                        None,
-                        Some(error),
-                    ),
-                }
-            });
-        }
-    }
 }
 
 fn now_millis() -> i64 {
@@ -336,61 +150,246 @@ fn clear_active_watch(
     guard.remove(path);
 }
 
+fn spawn_children_watch_task(watcher: ChildrenWatcher, oneshot: OneshotWatcher) {
+    async_runtime::spawn(async move {
+        handle_children_watch_event(watcher, oneshot.changed().await);
+    });
+}
+
+fn handle_children_watch_event(watcher: ChildrenWatcher, event: WatchedEvent) {
+    clear_active_watch(&watcher.active_paths, &watcher.path);
+    append_watch_log(
+        &watcher.log_store,
+        &watcher.connection_id,
+        "watch_children_triggered",
+        &watcher.path,
+        true,
+        "children watch triggered".into(),
+        Some(serde_json::json!({
+            "rawEventType": format!("{:?}", event.event_type),
+            "sessionState": format!("{:?}", event.session_state),
+        })),
+        None,
+    );
+
+    let Some((event_type, should_reregister)) = map_children_watch_event(event.event_type) else {
+        return;
+    };
+
+    emit_watch_event(
+        &watcher.app_handle,
+        &watcher.connection_id,
+        event_type,
+        &watcher.path,
+    );
+    append_watch_log(
+        &watcher.log_store,
+        &watcher.connection_id,
+        "watch_emit",
+        &watcher.path,
+        true,
+        format!("emitted {event_type}"),
+        None,
+        None,
+    );
+
+    if should_reregister {
+        std::thread::spawn(move || {
+            let result = if event_type == "children_changed" {
+                refresh_cached_children(&watcher)
+            } else {
+                register_children_watch(&watcher).map(|_| CacheChildDelta {
+                    added: Vec::new(),
+                    removed: Vec::new(),
+                })
+            };
+            match result {
+                Ok(delta) => {
+                    if !delta.added.is_empty() {
+                        emit_cache_event(
+                            &watcher.app_handle,
+                            &watcher.connection_id,
+                            "nodes_added",
+                            Some(&watcher.path),
+                            delta.added,
+                        );
+                    }
+                    if !delta.removed.is_empty() {
+                        emit_cache_event(
+                            &watcher.app_handle,
+                            &watcher.connection_id,
+                            "nodes_removed",
+                            Some(&watcher.path),
+                            delta.removed,
+                        );
+                    }
+                    append_watch_log(
+                        &watcher.log_store,
+                        &watcher.connection_id,
+                        "watch_reregister_children",
+                        &watcher.path,
+                        true,
+                        "re-registered children watch".into(),
+                        None,
+                        None,
+                    )
+                }
+                Err(error) => {
+                    if let Some((message, meta)) = classify_missing_node_race(&error) {
+                        append_watch_log(
+                            &watcher.log_store,
+                            &watcher.connection_id,
+                            "watch_reregister_children",
+                            &watcher.path,
+                            true,
+                            message,
+                            Some(meta),
+                            None,
+                        );
+                    } else {
+                        append_watch_log(
+                            &watcher.log_store,
+                            &watcher.connection_id,
+                            "watch_reregister_children",
+                            &watcher.path,
+                            false,
+                            "failed to re-register children watch".into(),
+                            None,
+                            Some(error),
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn spawn_data_watch_task(watcher: DataWatcher, oneshot: OneshotWatcher) {
+    async_runtime::spawn(async move {
+        handle_data_watch_event(watcher, oneshot.changed().await);
+    });
+}
+
+fn handle_data_watch_event(watcher: DataWatcher, event: WatchedEvent) {
+    clear_active_watch(&watcher.active_paths, &watcher.path);
+    append_watch_log(
+        &watcher.log_store,
+        &watcher.connection_id,
+        "watch_data_triggered",
+        &watcher.path,
+        true,
+        "data watch triggered".into(),
+        Some(serde_json::json!({
+            "rawEventType": format!("{:?}", event.event_type),
+            "sessionState": format!("{:?}", event.session_state),
+        })),
+        None,
+    );
+
+    let Some((event_type, should_reregister)) = map_data_watch_event(event.event_type) else {
+        return;
+    };
+
+    emit_watch_event(
+        &watcher.app_handle,
+        &watcher.connection_id,
+        event_type,
+        &watcher.path,
+    );
+    append_watch_log(
+        &watcher.log_store,
+        &watcher.connection_id,
+        "watch_emit",
+        &watcher.path,
+        true,
+        format!("emitted {event_type}"),
+        None,
+        None,
+    );
+
+    if should_reregister {
+        std::thread::spawn(move || {
+            let result = register_data_watch(&watcher).map(|_| ());
+            match result {
+                Ok(_) => append_watch_log(
+                    &watcher.log_store,
+                    &watcher.connection_id,
+                    "watch_reregister_data",
+                    &watcher.path,
+                    true,
+                    "re-registered data watch".into(),
+                    None,
+                    None,
+                ),
+                Err(error) => append_watch_log(
+                    &watcher.log_store,
+                    &watcher.connection_id,
+                    "watch_reregister_data",
+                    &watcher.path,
+                    false,
+                    "failed to re-register data watch".into(),
+                    None,
+                    Some(error),
+                ),
+            }
+        });
+    }
+}
+
 fn register_children_watch(watcher: &ChildrenWatcher) -> Result<Vec<String>, String> {
     if should_register_watch(&watcher.active_paths, &watcher.path) {
-        match watcher
-            .client
-            .get_children_w(&watcher.path, watcher.clone())
+        match async_runtime::block_on(watcher.client.list_and_watch_children(&watcher.path))
             .map_err(map_zk_error)
         {
-            Ok(children) => Ok(children),
+            Ok((children, oneshot)) => {
+                spawn_children_watch_task(watcher.clone(), oneshot);
+                Ok(children)
+            }
             Err(error) => {
                 clear_active_watch(&watcher.active_paths, &watcher.path);
                 Err(error)
             }
         }
     } else {
-        watcher
-            .client
-            .get_children(&watcher.path, false)
-            .map_err(map_zk_error)
+        async_runtime::block_on(watcher.client.list_children(&watcher.path)).map_err(map_zk_error)
     }
 }
 
 fn register_data_watch(
     watcher: &DataWatcher,
-) -> Result<(Vec<u8>, zookeeper::Stat), String> {
+) -> Result<(Vec<u8>, zookeeper_client::Stat), String> {
     if should_register_watch(&watcher.active_paths, &watcher.path) {
-        match watcher
-            .client
-            .get_data_w(&watcher.path, watcher.clone())
+        match async_runtime::block_on(watcher.client.get_and_watch_data(&watcher.path))
             .map_err(map_zk_error)
         {
-            Ok(data) => Ok(data),
+            Ok((data, stat, oneshot)) => {
+                spawn_data_watch_task(watcher.clone(), oneshot);
+                Ok((data, stat))
+            }
             Err(error) => {
                 clear_active_watch(&watcher.active_paths, &watcher.path);
                 Err(error)
             }
         }
     } else {
-        watcher.client.get_data(&watcher.path, false).map_err(map_zk_error)
+        async_runtime::block_on(watcher.client.get_data(&watcher.path)).map_err(map_zk_error)
     }
 }
 
-fn map_children_watch_event(event_type: WatchedEventType) -> Option<(&'static str, bool)> {
+fn map_children_watch_event(event_type: EventType) -> Option<(&'static str, bool)> {
     match event_type {
-        WatchedEventType::NodeChildrenChanged | WatchedEventType::NodeCreated => {
+        EventType::NodeChildrenChanged | EventType::NodeCreated => {
             Some(("children_changed", true))
         }
-        WatchedEventType::NodeDeleted => Some(("node_deleted", false)),
+        EventType::NodeDeleted => Some(("node_deleted", false)),
         _ => None,
     }
 }
 
-fn map_data_watch_event(event_type: WatchedEventType) -> Option<(&'static str, bool)> {
+fn map_data_watch_event(event_type: EventType) -> Option<(&'static str, bool)> {
     match event_type {
-        WatchedEventType::NodeDataChanged => Some(("data_changed", true)),
-        WatchedEventType::NodeDeleted => Some(("node_deleted", false)),
+        EventType::NodeDataChanged => Some(("data_changed", true)),
+        EventType::NodeDeleted => Some(("node_deleted", false)),
         _ => None,
     }
 }
@@ -406,27 +405,8 @@ impl LiveAdapter {
 
         // Use an immediately-invoked closure so all early-return paths share
         // the same post-operation logging block below.
-        let outcome: Result<(ZooKeeper, ConnectionStatusDto), String> = (|| {
-            let client = ZooKeeper::connect(
-                &request.connection_string,
-                Duration::from_secs(8),
-                NoopWatcher,
-            )
-            .map_err(map_zk_error)?;
-
-            if let (Some(username), Some(password)) = (&request.username, &request.password) {
-                if !username.is_empty() && !password.is_empty() {
-                    client
-                        .add_auth("digest", format!("{username}:{password}").into_bytes())
-                        .map_err(map_zk_error)?;
-                }
-            }
-
-            // Wait for the ZK session to be fully negotiated before returning.
-            // ZooKeeper::connect() returns as soon as the TCP connection is up,
-            // but the session handshake happens on a background thread.
-            // An immediate operation would fail with ConnectionLoss without this check.
-            client.exists("/", false).map_err(map_zk_error)?;
+        let outcome: Result<(Client, ConnectionStatusDto), String> = (|| {
+            let client = connect_client(request)?;
 
             let status = ConnectionStatusDto {
                 connected: true,
@@ -527,9 +507,7 @@ impl LiveAdapter {
 
     pub fn save_node(&self, path: &str, value: &str) -> Result<(), String> {
         let start = Instant::now();
-        let result = self
-            .client
-            .set_data(path, value.as_bytes().to_vec(), None)
+        let result = async_runtime::block_on(self.client.set_data(path, value.as_bytes(), None))
             .map(|_| ())
             .map_err(map_zk_error);
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -551,14 +529,10 @@ impl LiveAdapter {
 
     pub fn create_node(&self, path: &str, data: &str) -> Result<(), String> {
         let start = Instant::now();
-        let result = self
-            .client
-            .create(
-                path,
-                data.as_bytes().to_vec(),
-                Acl::open_unsafe().clone(),
-                CreateMode::Persistent,
-            )
+        let result = async_runtime::block_on(
+            self.client
+                .create(path, data.as_bytes(), &CreateMode::Persistent.with_acls(Acls::anyone_all())),
+        )
             .map(|_| ())
             .map_err(map_zk_error);
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -583,7 +557,7 @@ impl LiveAdapter {
             self.delete_recursive(path)
         } else {
             let start = Instant::now();
-            let result = self.client.delete(path, None).map_err(map_zk_error);
+            let result = async_runtime::block_on(self.client.delete(path, None)).map_err(map_zk_error);
             let duration_ms = start.elapsed().as_millis() as u64;
             let ok = result.is_ok();
             self.log_store.append(&ZkLogEntry {
@@ -649,7 +623,7 @@ impl LiveAdapter {
 
     /// Enumerate all children of `path` and recurse into each one.
     fn collect_subtree(&self, path: &str, result: &mut Vec<LoadedTreeNodeDto>) -> Result<(), String> {
-        let children = self.client.get_children(path, false).map_err(map_zk_error)?;
+        let (children, _) = async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
         for name in children {
             let child_path = if path == "/" {
                 format!("/{name}")
@@ -669,7 +643,7 @@ impl LiveAdapter {
         name: String,
         result: &mut Vec<LoadedTreeNodeDto>,
     ) -> Result<(), String> {
-        let children = self.client.get_children(path, false).map_err(map_zk_error)?;
+        let (children, _) = async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
         result.push(LoadedTreeNodeDto {
             path: path.to_string(),
             name,
@@ -683,7 +657,7 @@ impl LiveAdapter {
     }
 
     fn delete_recursive(&self, path: &str) -> Result<(), String> {
-        let children = self.client.get_children(path, false).map_err(map_zk_error)?;
+        let (children, _) = async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
         for child in &children {
             let child_path = if path == "/" {
                 format!("/{child}")
@@ -693,7 +667,7 @@ impl LiveAdapter {
             self.delete_recursive(&child_path)?;
         }
         let start = Instant::now();
-        let result = self.client.delete(path, None).map_err(map_zk_error);
+        let result = async_runtime::block_on(self.client.delete(path, None)).map_err(map_zk_error);
         let duration_ms = start.elapsed().as_millis() as u64;
         let ok = result.is_ok();
         self.log_store.append(&ZkLogEntry {
@@ -815,10 +789,8 @@ impl LiveAdapter {
                 } else {
                     format!("{path}/{name}")
                 };
-                let nested = self
-                    .client
-                    .get_children(&child_path, false)
-                    .map_err(map_zk_error)?;
+                let (nested, _) =
+                    async_runtime::block_on(self.client.get_children(&child_path)).map_err(map_zk_error)?;
                 Ok(LoadedTreeNodeDto {
                     path: child_path,
                     name,
@@ -867,7 +839,19 @@ impl LiveAdapter {
     }
 }
 
-fn map_zk_error(error: zookeeper::ZkError) -> String {
+fn connect_client(request: &ConnectRequestDto) -> Result<Client, String> {
+    let mut connector = Client::connector().with_session_timeout(Duration::from_secs(8));
+    if let (Some(username), Some(password)) = (&request.username, &request.password) {
+        if !username.is_empty() && !password.is_empty() {
+            let auth = format!("{username}:{password}");
+            connector = connector.with_auth("digest", auth.as_bytes());
+        }
+    }
+
+    async_runtime::block_on(connector.connect(&request.connection_string)).map_err(map_zk_error)
+}
+
+fn map_zk_error(error: zookeeper_client::Error) -> String {
     format!("{error:?}")
 }
 
@@ -950,9 +934,9 @@ fn mark_cache_resyncing(cache: &Arc<std::sync::Mutex<ConnectionCache>>) {
     guard.mark_resyncing();
 }
 
-fn collect_full_tree_records(client: &ZooKeeper) -> Result<Vec<NodeRecord>, String> {
+fn collect_full_tree_records(client: &Client) -> Result<Vec<NodeRecord>, String> {
     let mut nodes = Vec::new();
-    let children = client.get_children("/", false).map_err(map_zk_error)?;
+    let (children, _) = async_runtime::block_on(client.get_children("/")).map_err(map_zk_error)?;
     for name in children {
         let child_path = format!("/{name}");
         collect_node_records(client, &child_path, name, "/", &mut nodes)?;
@@ -961,13 +945,13 @@ fn collect_full_tree_records(client: &ZooKeeper) -> Result<Vec<NodeRecord>, Stri
 }
 
 fn collect_node_records(
-    client: &ZooKeeper,
+    client: &Client,
     path: &str,
     name: String,
     parent_path: &str,
     result: &mut Vec<NodeRecord>,
 ) -> Result<(), String> {
-    let children = client.get_children(path, false).map_err(map_zk_error)?;
+    let (children, _) = async_runtime::block_on(client.get_children(path)).map_err(map_zk_error)?;
     result.push(NodeRecord::new(
         path,
         &name,
@@ -990,7 +974,7 @@ fn child_path(parent_path: &str, child_name: &str) -> String {
 }
 
 fn load_child_records(
-    client: &ZooKeeper,
+    client: &Client,
     parent_path: &str,
     child_names: Vec<String>,
 ) -> Result<Vec<NodeRecord>, String> {
@@ -998,7 +982,8 @@ fn load_child_records(
         .into_iter()
         .map(|name| {
             let path = child_path(parent_path, &name);
-            let nested_children = client.get_children(&path, false).map_err(map_zk_error)?;
+            let (nested_children, _) =
+                async_runtime::block_on(client.get_children(&path)).map_err(map_zk_error)?;
             Ok(NodeRecord::new(
                 &path,
                 &name,
@@ -1129,24 +1114,26 @@ fn map_cache_event_type(event_type: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zookeeper::WatchedEventType;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use zookeeper_client::{Acls, EventType};
 
     #[test]
     fn children_watch_events_map_to_expected_app_events() {
         assert_eq!(
-            map_children_watch_event(WatchedEventType::NodeChildrenChanged),
+            map_children_watch_event(EventType::NodeChildrenChanged),
             Some(("children_changed", true))
         );
         assert_eq!(
-            map_children_watch_event(WatchedEventType::NodeCreated),
+            map_children_watch_event(EventType::NodeCreated),
             Some(("children_changed", true))
         );
         assert_eq!(
-            map_children_watch_event(WatchedEventType::NodeDeleted),
+            map_children_watch_event(EventType::NodeDeleted),
             Some(("node_deleted", false))
         );
         assert_eq!(
-            map_children_watch_event(WatchedEventType::NodeDataChanged),
+            map_children_watch_event(EventType::NodeDataChanged),
             None
         );
     }
@@ -1154,16 +1141,16 @@ mod tests {
     #[test]
     fn data_watch_events_map_to_expected_app_events() {
         assert_eq!(
-            map_data_watch_event(WatchedEventType::NodeDataChanged),
+            map_data_watch_event(EventType::NodeDataChanged),
             Some(("data_changed", true))
         );
         assert_eq!(
-            map_data_watch_event(WatchedEventType::NodeDeleted),
+            map_data_watch_event(EventType::NodeDeleted),
             Some(("node_deleted", false))
         );
-        assert_eq!(map_data_watch_event(WatchedEventType::NodeCreated), None);
+        assert_eq!(map_data_watch_event(EventType::NodeCreated), None);
         assert_eq!(
-            map_data_watch_event(WatchedEventType::NodeChildrenChanged),
+            map_data_watch_event(EventType::NodeChildrenChanged),
             None
         );
     }
@@ -1229,4 +1216,139 @@ mod tests {
         assert_eq!(event.parent_path, None);
         assert!(event.paths.is_empty());
     }
+
+    #[test]
+    #[ignore = "requires a local ZooKeeper server with digest auth"]
+    fn real_zookeeper_smoke_connects_and_lists_root() {
+        let request = ConnectRequestDto {
+            connection_string: std::env::var("ZOOCUTE_REAL_ZK")
+                .unwrap_or_else(|_| "127.0.0.1:2181".to_string()),
+            username: Some(
+                std::env::var("ZOOCUTE_REAL_ZK_USER").unwrap_or_else(|_| "admin".to_string()),
+            ),
+            password: Some(
+                std::env::var("ZOOCUTE_REAL_ZK_PASS").unwrap_or_else(|_| "admin".to_string()),
+            ),
+        };
+
+        let client = connect_client(&request).expect("real zookeeper connection should succeed");
+        let root_stat = async_runtime::block_on(client.check_stat("/"))
+            .expect("root stat request should succeed");
+        assert!(root_stat.is_some(), "root node should exist");
+
+        let root_children = async_runtime::block_on(client.list_children("/"))
+            .expect("root children request should succeed");
+        println!("root children: {:?}", root_children);
+    }
+
+    #[test]
+    #[ignore = "requires a local ZooKeeper server with digest auth"]
+    fn real_zookeeper_children_watch_receives_children_changed() {
+        let client = connect_client(&real_zookeeper_request())
+            .expect("real zookeeper connection should succeed");
+        let root = unique_test_root("children-watch");
+
+        create_persistent_node(&client, &root, b"").expect("test root should be created");
+        let (children, watcher) = async_runtime::block_on(client.list_and_watch_children(&root))
+            .expect("children watch should register");
+        assert!(children.is_empty(), "fresh test root should not have children");
+
+        let child = format!("{root}/node-a");
+        create_persistent_node(&client, &child, b"child").expect("child should be created");
+
+        let event = async_runtime::block_on(watcher.changed());
+        assert_eq!(event.event_type, EventType::NodeChildrenChanged);
+        assert_eq!(event.path, root);
+
+        delete_recursive_for_test(&client, &root).expect("test subtree should be cleaned up");
+    }
+
+    #[test]
+    #[ignore = "requires a local ZooKeeper server with digest auth"]
+    fn real_zookeeper_data_watch_receives_data_changed() {
+        let client = connect_client(&real_zookeeper_request())
+            .expect("real zookeeper connection should succeed");
+        let root = unique_test_root("data-watch");
+        let node = format!("{root}/node-a");
+
+        create_persistent_node(&client, &root, b"").expect("test root should be created");
+        create_persistent_node(&client, &node, b"before").expect("watched node should be created");
+
+        let (data, stat, watcher) = async_runtime::block_on(client.get_and_watch_data(&node))
+            .expect("data watch should register");
+        assert_eq!(data, b"before".to_vec());
+
+        let updated = async_runtime::block_on(client.set_data(&node, b"after", Some(stat.version)))
+            .expect("node data should update");
+        assert_eq!(updated.version, stat.version + 1);
+
+        let event = async_runtime::block_on(watcher.changed());
+        assert_eq!(event.event_type, EventType::NodeDataChanged);
+        assert_eq!(event.path, node);
+
+        delete_recursive_for_test(&client, &root).expect("test subtree should be cleaned up");
+    }
+
+    #[test]
+    #[ignore = "requires a local ZooKeeper server with digest auth"]
+    fn real_zookeeper_data_watch_receives_node_deleted() {
+        let client = connect_client(&real_zookeeper_request())
+            .expect("real zookeeper connection should succeed");
+        let root = unique_test_root("delete-watch");
+        let node = format!("{root}/node-a");
+
+        create_persistent_node(&client, &root, b"").expect("test root should be created");
+        create_persistent_node(&client, &node, b"before").expect("watched node should be created");
+
+        let (_data, _stat, watcher) = async_runtime::block_on(client.get_and_watch_data(&node))
+            .expect("data watch should register");
+
+        async_runtime::block_on(client.delete(&node, None)).expect("node should be deleted");
+
+        let event = async_runtime::block_on(watcher.changed());
+        assert_eq!(event.event_type, EventType::NodeDeleted);
+        assert_eq!(event.path, node);
+
+        delete_recursive_for_test(&client, &root).expect("test subtree should be cleaned up");
+    }
+
+    fn real_zookeeper_request() -> ConnectRequestDto {
+        ConnectRequestDto {
+            connection_string: std::env::var("ZOOCUTE_REAL_ZK")
+                .unwrap_or_else(|_| "127.0.0.1:2181".to_string()),
+            username: Some(
+                std::env::var("ZOOCUTE_REAL_ZK_USER").unwrap_or_else(|_| "admin".to_string()),
+            ),
+            password: Some(
+                std::env::var("ZOOCUTE_REAL_ZK_PASS").unwrap_or_else(|_| "admin".to_string()),
+            ),
+        }
+    }
+
+    fn unique_test_root(prefix: &str) -> String {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_millis();
+        format!("/zoocute-codex-{prefix}-{millis}")
+    }
+
+    fn create_persistent_node(client: &Client, path: &str, data: &[u8]) -> Result<(), String> {
+        async_runtime::block_on(
+            client.create(path, data, &CreateMode::Persistent.with_acls(Acls::anyone_all())),
+        )
+        .map(|_| ())
+        .map_err(map_zk_error)
+    }
+
+    fn delete_recursive_for_test(client: &Client, path: &str) -> Result<(), String> {
+        let (children, _) = async_runtime::block_on(client.get_children(path)).map_err(map_zk_error)?;
+        for child in children {
+            delete_recursive_for_test(client, &child_path(path, &child))?;
+        }
+        async_runtime::block_on(client.delete(path, None))
+            .map(|_| ())
+            .map_err(map_zk_error)
+    }
+
 }

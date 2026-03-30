@@ -14,7 +14,7 @@ tauri-build = { version = "2.0.3", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri = { version = "2.1.1", features = [] }
-zookeeper = "0.8.0"
+zookeeper-client = { version = "0.11.1", features = ["tokio"] }
 
 [features]
 default = ["custom-protocol"]

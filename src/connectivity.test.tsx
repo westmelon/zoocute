@@ -84,6 +84,9 @@ const LOCAL_CONN: SavedConnection = {
   timeoutMs: 5000,
 };
 
+const AUTH_HINT =
+  "\u8ba4\u8bc1\u5931\u8d25\uff1a\u8d26\u53f7\u6216\u5bc6\u7801\u9519\u8bef\uff0c\u6216\u5f53\u524d\u8d26\u53f7\u6ca1\u6709\u8bbf\u95ee\u6839\u8282\u70b9\u7684\u6743\u9650\u3002\u8bf7\u68c0\u67e5\u7528\u6237\u540d\u3001\u5bc6\u7801\uff0c\u5e76\u786e\u8ba4\u5df2\u4fdd\u5b58\u6700\u65b0\u914d\u7f6e\u3002";
+
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
@@ -153,6 +156,24 @@ describe("submitConnection", () => {
     expect(result.current.hasActiveSessions).toBe(false);
     expect(result.current.connectionError).toBe("refused");
   });
+
+  it("shows an explicit auth hint when the root load is rejected with NoAuth", async () => {
+    listChildrenMock.mockRejectedValueOnce(new Error("NoAuth"));
+    const { result } = renderHook(() => useWorkbenchState());
+
+    await act(async () => {
+      await result.current.submitConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "admin",
+        password: "bad-password",
+      });
+    });
+
+    expect(result.current.hasActiveSessions).toBe(false);
+    expect(disconnectServerMock).toHaveBeenCalledWith("local");
+    expect(result.current.connectionError).toBe(AUTH_HINT);
+  });
 });
 
 describe("testConnection", () => {
@@ -173,12 +194,30 @@ describe("testConnection", () => {
       username: undefined,
       password: undefined,
     });
+    expect(listChildrenMock).toHaveBeenCalledWith("local", "/");
     expect(disconnectServerMock).toHaveBeenCalledWith("local");
     expect(result.current.hasActiveSessions).toBe(false);
     expect(result.current.activeTabId).toBe(null);
     expect(result.current.ribbonMode).toBe("connections");
     expect(result.current.connectionError).toBe(null);
     expect(result.current.connectionNotice).toBe("连接测试成功");
+  });
+
+  it("shows an explicit auth hint when the test connection returns NoAuth", async () => {
+    listChildrenMock.mockRejectedValueOnce(new Error("NoAuth"));
+    const { result } = renderHook(() => useWorkbenchState());
+
+    await act(async () => {
+      await result.current.testConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "admin",
+        password: "bad-password",
+      });
+    });
+
+    expect(disconnectServerMock).toHaveBeenCalledWith("local");
+    expect(result.current.connectionError).toBe(AUTH_HINT);
   });
 });
 
@@ -271,3 +310,5 @@ describe("getTreeSnapshot", () => {
     expect(snapshot.nodes[0].path).toBe("/ssdev");
   });
 });
+
+
