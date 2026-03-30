@@ -153,6 +153,25 @@ describe("submitConnection", () => {
     expect(result.current.hasActiveSessions).toBe(false);
     expect(result.current.connectionError).toBe("refused");
   });
+
+  it("shows an explicit auth hint when the root load is rejected with NoAuth", async () => {
+    listChildrenMock.mockRejectedValueOnce(new Error("NoAuth"));
+    const { result } = renderHook(() => useWorkbenchState());
+
+    await act(async () => {
+      await result.current.submitConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "admin",
+        password: "bad-password",
+      });
+    });
+
+    expect(result.current.hasActiveSessions).toBe(false);
+    expect(result.current.connectionError).toBe(
+      "认证失败：账号或密码错误，或当前账号没有访问根节点的权限。请检查用户名、密码，并确认已保存最新配置。"
+    );
+  });
 });
 
 describe("testConnection", () => {
@@ -179,6 +198,24 @@ describe("testConnection", () => {
     expect(result.current.ribbonMode).toBe("connections");
     expect(result.current.connectionError).toBe(null);
     expect(result.current.connectionNotice).toBe("连接测试成功");
+  });
+
+  it("shows an explicit auth hint when the test connection returns NoAuth", async () => {
+    connectServerMock.mockRejectedValueOnce(new Error("NoAuth"));
+    const { result } = renderHook(() => useWorkbenchState());
+
+    await act(async () => {
+      await result.current.testConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "admin",
+        password: "bad-password",
+      });
+    });
+
+    expect(result.current.connectionError).toBe(
+      "认证失败：账号或密码错误，或当前账号没有访问根节点的权限。请检查用户名、密码，并确认已保存最新配置。"
+    );
   });
 });
 
@@ -271,3 +308,4 @@ describe("getTreeSnapshot", () => {
     expect(snapshot.nodes[0].path).toBe("/ssdev");
   });
 });
+
