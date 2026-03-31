@@ -74,6 +74,40 @@ it("hides charset selector for binary nodes", () => {
   expect(screen.queryByLabelText("字符编码")).not.toBeInTheDocument();
 });
 
+it("shows parser plugin selector and parse action", () => {
+  render(
+    <EditorToolbar
+      {...defaultProps}
+      plugins={[{ id: "dubbo-provider", name: "Dubbo Provider Decoder" }]}
+      selectedPluginId="dubbo-provider"
+      onPluginChange={vi.fn()}
+      onParsePlugin={vi.fn()}
+      pluginResultAvailable={false}
+      isPluginParsing={false}
+    />
+  );
+
+  expect(screen.getByLabelText("Plugin")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Parse" })).toBeInTheDocument();
+});
+
+it("shows plugin tab only after a parse result exists", () => {
+  render(
+    <EditorToolbar
+      {...defaultProps}
+      viewMode="plugin"
+      plugins={[{ id: "dubbo-provider", name: "Dubbo Provider Decoder" }]}
+      selectedPluginId="dubbo-provider"
+      onPluginChange={vi.fn()}
+      onParsePlugin={vi.fn()}
+      pluginResultAvailable={true}
+      isPluginParsing={false}
+    />
+  );
+
+  expect(screen.getByRole("button", { name: "PLUGIN" })).toBeInTheDocument();
+});
+
 it("calls onViewModeChange when tab clicked", async () => {
   const user = userEvent.setup();
   const onViewModeChange = vi.fn();

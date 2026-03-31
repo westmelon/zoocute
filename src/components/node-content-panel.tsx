@@ -8,6 +8,7 @@ const OS_OPTIONS = {
 
 interface NodeContentPanelProps {
   value: string;
+  pluginContent?: string | null;
   viewMode: ViewMode;
   isEditing: boolean;
   onChange: (value: string) => void;
@@ -117,11 +118,16 @@ function parseXml(value: string): { ok: true; formatted: string } | { ok: false 
 
 export function NodeContentPanel({
   value,
+  pluginContent,
   viewMode,
   isEditing,
   onChange,
   onFallbackToRaw,
 }: NodeContentPanelProps) {
+  if (viewMode === "plugin") {
+    return <ContentTextarea value={pluginContent ?? ""} isEditing={false} onChange={onChange} />;
+  }
+
   if (viewMode === "json") {
     if (isEditing) {
       // In edit mode: skip formatting to prevent cursor jumps on partial input
@@ -129,16 +135,9 @@ export function NodeContentPanel({
     }
     const result = formatJson(value);
     if (!result.ok) {
-      return (
-        <ParseErrorPanel
-          mode="JSON"
-          onFallbackToRaw={onFallbackToRaw}
-        />
-      );
+      return <ParseErrorPanel mode="JSON" onFallbackToRaw={onFallbackToRaw} />;
     }
-    return (
-      <ContentTextarea value={result.formatted} isEditing={false} onChange={onChange} />
-    );
+    return <ContentTextarea value={result.formatted} isEditing={false} onChange={onChange} />;
   }
 
   if (viewMode === "xml") {
@@ -148,20 +147,10 @@ export function NodeContentPanel({
     }
     const result = parseXml(value);
     if (!result.ok) {
-      return (
-        <ParseErrorPanel
-          mode="XML"
-          onFallbackToRaw={onFallbackToRaw}
-        />
-      );
+      return <ParseErrorPanel mode="XML" onFallbackToRaw={onFallbackToRaw} />;
     }
-    return (
-      <ContentTextarea value={result.formatted} isEditing={false} onChange={onChange} />
-    );
+    return <ContentTextarea value={result.formatted} isEditing={false} onChange={onChange} />;
   }
 
-  // Raw mode
-  return (
-    <ContentTextarea value={value} isEditing={isEditing} onChange={onChange} />
-  );
+  return <ContentTextarea value={value} isEditing={isEditing} onChange={onChange} />;
 }

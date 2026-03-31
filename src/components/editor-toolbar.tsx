@@ -1,4 +1,4 @@
-import type { Charset, ViewMode } from "../lib/types";
+import type { Charset, ParserPlugin, ViewMode } from "../lib/types";
 
 interface EditorToolbarProps {
   isEditing: boolean;
@@ -11,12 +11,19 @@ interface EditorToolbarProps {
   onDiff: () => void;
   onDiscard: () => void;
   onSave: () => void;
+  plugins?: ParserPlugin[];
+  selectedPluginId?: string;
+  onPluginChange?: (pluginId: string) => void;
+  onParsePlugin?: () => void;
+  pluginResultAvailable?: boolean;
+  isPluginParsing?: boolean;
 }
 
-const VIEW_MODES: { value: ViewMode; label: string }[] = [
+const VIEW_MODES: { value: ViewMode; label: string; requiresResult?: boolean }[] = [
   { value: "raw", label: "RAW" },
   { value: "json", label: "JSON" },
   { value: "xml", label: "XML" },
+  { value: "plugin", label: "PLUGIN", requiresResult: true },
 ];
 
 const CHARSETS: Charset[] = ["UTF-8", "GBK", "ISO-8859-1"];
@@ -32,11 +39,19 @@ export function EditorToolbar({
   onDiff,
   onDiscard,
   onSave,
+  plugins = [],
+  selectedPluginId = "",
+  onPluginChange = () => {},
+  onParsePlugin = () => {},
+  pluginResultAvailable = false,
+  isPluginParsing = false,
 }: EditorToolbarProps) {
+  const visibleModes = VIEW_MODES.filter((mode) => !mode.requiresResult || pluginResultAvailable);
+
   return (
     <div className="editor-toolbar">
       <div className="toolbar-view-tabs" role="group" aria-label="查看模式">
-        {VIEW_MODES.map((m, index) => (
+        {visibleModes.map((m, index) => (
           <div key={m.value} className="toolbar-view-segment">
             <button
               type="button"
@@ -47,7 +62,7 @@ export function EditorToolbar({
             >
               {m.label}
             </button>
-            {index < VIEW_MODES.length - 1 ? <span className="toolbar-view-divider" aria-hidden="true" /> : null}
+            {index < visibleModes.length - 1 ? <span className="toolbar-view-divider" aria-hidden="true" /> : null}
           </div>
         ))}
       </div>
@@ -60,10 +75,39 @@ export function EditorToolbar({
           onChange={(e) => onCharsetChange(e.target.value as Charset)}
         >
           {CHARSETS.map((c) => (
-            <option key={c} value={c}>{c}</option>
+            <option key={c} value={c}>
+              {c}
+            </option>
           ))}
         </select>
       )}
+
+      {plugins.length > 0 ? (
+        <>
+          <select
+            aria-label="Plugin"
+            className="toolbar-plugin-select"
+            value={selectedPluginId}
+            onChange={(e) => onPluginChange(e.target.value)}
+          >
+            <option value="">Select plugin</option>
+            {plugins.map((plugin) => (
+              <option key={plugin.id} value={plugin.id}>
+                {plugin.name}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            className="btn"
+            onClick={onParsePlugin}
+            disabled={!selectedPluginId || isPluginParsing}
+          >
+            {isPluginParsing ? "Parsing..." : "Parse"}
+          </button>
+        </>
+      ) : null}
 
       <div className="toolbar-sep" />
 

@@ -939,6 +939,16 @@ body {
 }
 .toolbar-charset-select:focus { border-color: var(--accent); }
 
+.toolbar-plugin-select {
+  min-width: 220px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 /* ─── Content Parse Error ────────────────────────────── */
 .content-parse-error {
   padding: 16px 14px;
