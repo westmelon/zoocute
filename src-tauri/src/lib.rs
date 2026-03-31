@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod domain;
 pub mod logging;
+pub mod parser_plugins;
 pub mod zk_core;
 
 use commands::{
