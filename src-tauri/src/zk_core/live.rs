@@ -11,8 +11,8 @@ use crate::domain::{
     TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
-use crate::zk_core::cache::{CacheStatus, ConnectionCache, NodeRecord};
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
+use crate::zk_core::cache::{CacheStatus, ConnectionCache, NodeRecord};
 use crate::zk_core::interpreter::{hex_encode, interpret_data};
 
 #[derive(Clone)]
@@ -115,7 +115,11 @@ fn append_watch_log(
 ) {
     log_store.append(&ZkLogEntry {
         timestamp: now_millis(),
-        level: if success { "DEBUG".into() } else { "ERROR".into() },
+        level: if success {
+            "DEBUG".into()
+        } else {
+            "ERROR".into()
+        },
         connection_id: Some(connection_id.to_string()),
         operation: operation.to_string(),
         path: Some(path.to_string()),
@@ -146,10 +150,7 @@ fn should_register_watch(
     guard.insert(path.to_string())
 }
 
-fn clear_active_watch(
-    active_paths: &Arc<std::sync::Mutex<HashSet<String>>>,
-    path: &str,
-) {
+fn clear_active_watch(active_paths: &Arc<std::sync::Mutex<HashSet<String>>>, path: &str) {
     let mut guard = active_paths.lock().unwrap_or_else(|e| e.into_inner());
     guard.remove(path);
 }
@@ -159,7 +160,9 @@ fn is_shutdown(shutdown: &Arc<AtomicBool>) -> bool {
 }
 
 fn upgrade_client(client: &Weak<Client>) -> Result<Arc<Client>, String> {
-    client.upgrade().ok_or_else(|| "client disconnected".to_string())
+    client
+        .upgrade()
+        .ok_or_else(|| "client disconnected".to_string())
 }
 
 fn spawn_children_watch_task(watcher: ChildrenWatcher, oneshot: OneshotWatcher) {
@@ -383,9 +386,7 @@ fn register_children_watch(watcher: &ChildrenWatcher) -> Result<Vec<String>, Str
     }
 }
 
-fn register_data_watch(
-    watcher: &DataWatcher,
-) -> Result<(Vec<u8>, zookeeper_client::Stat), String> {
+fn register_data_watch(watcher: &DataWatcher) -> Result<(Vec<u8>, zookeeper_client::Stat), String> {
     if is_shutdown(&watcher.shutdown) {
         return Err("client disconnected".to_string());
     }
@@ -410,9 +411,7 @@ fn register_data_watch(
 
 fn map_children_watch_event(event_type: EventType) -> Option<(&'static str, bool)> {
     match event_type {
-        EventType::NodeChildrenChanged | EventType::NodeCreated => {
-            Some(("children_changed", true))
-        }
+        EventType::NodeChildrenChanged | EventType::NodeCreated => Some(("children_changed", true)),
         EventType::NodeDeleted => Some(("node_deleted", false)),
         _ => None,
     }
@@ -459,7 +458,11 @@ impl LiveAdapter {
             path: None,
             success: ok,
             duration_ms,
-            message: if ok { "connect succeeded".into() } else { "connect failed".into() },
+            message: if ok {
+                "connect succeeded".into()
+            } else {
+                "connect failed".into()
+            },
             error: outcome.as_ref().err().cloned(),
             meta: Some(serde_json::json!({ "authMode": request.auth_mode() })),
         });
@@ -476,7 +479,12 @@ impl LiveAdapter {
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         mark_cache_resyncing(&adapter.cache);
-        append_cache_resync_log(&adapter.log_store, &adapter.connection_id, "cache_resync_started", "/");
+        append_cache_resync_log(
+            &adapter.log_store,
+            &adapter.connection_id,
+            "cache_resync_started",
+            "/",
+        );
         adapter.bootstrap_subtree_cache();
         Ok((adapter, status))
     }
@@ -511,12 +519,7 @@ impl LiveAdapter {
                         "cache_resync_completed",
                         "/",
                     );
-                    append_cache_log(
-                        &log_store,
-                        &connection_id,
-                        "cache_bootstrap_completed",
-                        "/",
-                    );
+                    append_cache_log(&log_store, &connection_id, "cache_bootstrap_completed", "/");
                     let event = snapshot_ready_cache_event(&connection_id);
                     emit_cache_event(
                         &app_handle,
@@ -563,7 +566,11 @@ impl LiveAdapter {
             path: Some(path.to_string()),
             success: ok,
             duration_ms,
-            message: if ok { "save_node succeeded".into() } else { "save_node failed".into() },
+            message: if ok {
+                "save_node succeeded".into()
+            } else {
+                "save_node failed".into()
+            },
             error: result.as_ref().err().cloned(),
             meta: None,
         });
@@ -584,12 +591,13 @@ impl LiveAdapter {
 
     pub fn create_node(&self, path: &str, data: &str) -> Result<(), String> {
         let start = Instant::now();
-        let result = async_runtime::block_on(
-            self.client
-                .create(path, data.as_bytes(), &CreateMode::Persistent.with_acls(Acls::anyone_all())),
-        )
-            .map(|_| ())
-            .map_err(map_zk_error);
+        let result = async_runtime::block_on(self.client.create(
+            path,
+            data.as_bytes(),
+            &CreateMode::Persistent.with_acls(Acls::anyone_all()),
+        ))
+        .map(|_| ())
+        .map_err(map_zk_error);
         let duration_ms = start.elapsed().as_millis() as u64;
         let ok = result.is_ok();
         self.log_store.append(&ZkLogEntry {
@@ -600,7 +608,11 @@ impl LiveAdapter {
             path: Some(path.to_string()),
             success: ok,
             duration_ms,
-            message: if ok { "create_node succeeded".into() } else { "create_node failed".into() },
+            message: if ok {
+                "create_node succeeded".into()
+            } else {
+                "create_node failed".into()
+            },
             error: result.as_ref().err().cloned(),
             meta: None,
         });
@@ -612,7 +624,8 @@ impl LiveAdapter {
             self.delete_recursive(path)
         } else {
             let start = Instant::now();
-            let result = async_runtime::block_on(self.client.delete(path, None)).map_err(map_zk_error);
+            let result =
+                async_runtime::block_on(self.client.delete(path, None)).map_err(map_zk_error);
             let duration_ms = start.elapsed().as_millis() as u64;
             let ok = result.is_ok();
             self.log_store.append(&ZkLogEntry {
@@ -677,8 +690,13 @@ impl LiveAdapter {
     }
 
     /// Enumerate all children of `path` and recurse into each one.
-    fn collect_subtree(&self, path: &str, result: &mut Vec<LoadedTreeNodeDto>) -> Result<(), String> {
-        let (children, _) = async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
+    fn collect_subtree(
+        &self,
+        path: &str,
+        result: &mut Vec<LoadedTreeNodeDto>,
+    ) -> Result<(), String> {
+        let (children, _) =
+            async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
         for name in children {
             let child_path = if path == "/" {
                 format!("/{name}")
@@ -698,7 +716,8 @@ impl LiveAdapter {
         name: String,
         result: &mut Vec<LoadedTreeNodeDto>,
     ) -> Result<(), String> {
-        let (children, _) = async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
+        let (children, _) =
+            async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
         result.push(LoadedTreeNodeDto {
             path: path.to_string(),
             name,
@@ -712,7 +731,8 @@ impl LiveAdapter {
     }
 
     fn delete_recursive(&self, path: &str) -> Result<(), String> {
-        let (children, _) = async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
+        let (children, _) =
+            async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
         for child in &children {
             let child_path = if path == "/" {
                 format!("/{child}")
@@ -813,7 +833,11 @@ impl ReadOnlyZkAdapter for LiveAdapter {
             path: Some(path.to_string()),
             success: ok,
             duration_ms,
-            message: if ok { "get_node succeeded".into() } else { "get_node failed".into() },
+            message: if ok {
+                "get_node succeeded".into()
+            } else {
+                "get_node failed".into()
+            },
             error: result.as_ref().err().cloned(),
             meta: result
                 .as_ref()
@@ -825,6 +849,20 @@ impl ReadOnlyZkAdapter for LiveAdapter {
 }
 
 impl LiveAdapter {
+    pub fn get_node_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        let watcher = DataWatcher {
+            client: Arc::downgrade(&self.client),
+            app_handle: self.app_handle.clone(),
+            connection_id: self.connection_id.clone(),
+            path: path.to_string(),
+            log_store: Arc::clone(&self.log_store),
+            active_paths: Arc::clone(&self.data_watch_paths),
+            shutdown: Arc::clone(&self.shutdown),
+        };
+        let (data, _) = register_data_watch(&watcher)?;
+        Ok(data)
+    }
+
     fn do_list_children(&self, path: &str) -> Result<Vec<LoadedTreeNodeDto>, String> {
         let watcher = ChildrenWatcher {
             client: Arc::downgrade(&self.client),
@@ -845,8 +883,8 @@ impl LiveAdapter {
                 } else {
                     format!("{path}/{name}")
                 };
-                let (nested, _) =
-                    async_runtime::block_on(self.client.get_children(&child_path)).map_err(map_zk_error)?;
+                let (nested, _) = async_runtime::block_on(self.client.get_children(&child_path))
+                    .map_err(map_zk_error)?;
                 Ok(LoadedTreeNodeDto {
                     path: child_path,
                     name,
@@ -912,12 +950,7 @@ fn map_zk_error(error: zookeeper_client::Error) -> String {
     format!("{error:?}")
 }
 
-fn append_cache_log(
-    log_store: &ZkLogStore,
-    connection_id: &str,
-    operation: &str,
-    path: &str,
-) {
+fn append_cache_log(log_store: &ZkLogStore, connection_id: &str, operation: &str, path: &str) {
     log_store.append_operation(
         Some(connection_id),
         operation,
@@ -1191,10 +1224,7 @@ mod tests {
             map_children_watch_event(EventType::NodeDeleted),
             Some(("node_deleted", false))
         );
-        assert_eq!(
-            map_children_watch_event(EventType::NodeDataChanged),
-            None
-        );
+        assert_eq!(map_children_watch_event(EventType::NodeDataChanged), None);
     }
 
     #[test]
@@ -1208,10 +1238,7 @@ mod tests {
             Some(("node_deleted", false))
         );
         assert_eq!(map_data_watch_event(EventType::NodeCreated), None);
-        assert_eq!(
-            map_data_watch_event(EventType::NodeChildrenChanged),
-            None
-        );
+        assert_eq!(map_data_watch_event(EventType::NodeChildrenChanged), None);
     }
 
     #[test]
@@ -1234,13 +1261,19 @@ mod tests {
         let cache = Arc::new(std::sync::Mutex::new(ConnectionCache::new()));
         mark_cache_resyncing(&cache);
 
-        let snapshot = cache.lock().unwrap_or_else(|e| e.into_inner()).to_snapshot();
+        let snapshot = cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .to_snapshot();
         assert_eq!(snapshot.status, "resyncing");
     }
 
     #[test]
     fn cache_event_types_are_exposed_for_frontend_projection() {
-        assert_eq!(map_cache_event_type("snapshot_ready"), Some("snapshot_ready"));
+        assert_eq!(
+            map_cache_event_type("snapshot_ready"),
+            Some("snapshot_ready")
+        );
         assert_eq!(map_cache_event_type("nodes_added"), Some("nodes_added"));
         assert_eq!(map_cache_event_type("nodes_removed"), Some("nodes_removed"));
     }
@@ -1256,11 +1289,8 @@ mod tests {
             ],
         );
 
-        let delta = diff_cache_children(
-            &cache,
-            "/",
-            &vec!["/stay".to_string(), "/new".to_string()],
-        );
+        let delta =
+            diff_cache_children(&cache, "/", &vec!["/stay".to_string(), "/new".to_string()]);
 
         assert_eq!(delta.added, vec!["/new".to_string()]);
         assert_eq!(delta.removed, vec!["/old".to_string()]);
@@ -1318,7 +1348,10 @@ mod tests {
         create_persistent_node(&client, &root, b"").expect("test root should be created");
         let (children, watcher) = async_runtime::block_on(client.list_and_watch_children(&root))
             .expect("children watch should register");
-        assert!(children.is_empty(), "fresh test root should not have children");
+        assert!(
+            children.is_empty(),
+            "fresh test root should not have children"
+        );
 
         let child = format!("{root}/node-a");
         create_persistent_node(&client, &child, b"child").expect("child should be created");
@@ -1401,15 +1434,18 @@ mod tests {
     }
 
     fn create_persistent_node(client: &Client, path: &str, data: &[u8]) -> Result<(), String> {
-        async_runtime::block_on(
-            client.create(path, data, &CreateMode::Persistent.with_acls(Acls::anyone_all())),
-        )
+        async_runtime::block_on(client.create(
+            path,
+            data,
+            &CreateMode::Persistent.with_acls(Acls::anyone_all()),
+        ))
         .map(|_| ())
         .map_err(map_zk_error)
     }
 
     fn delete_recursive_for_test(client: &Client, path: &str) -> Result<(), String> {
-        let (children, _) = async_runtime::block_on(client.get_children(path)).map_err(map_zk_error)?;
+        let (children, _) =
+            async_runtime::block_on(client.get_children(path)).map_err(map_zk_error)?;
         for child in children {
             delete_recursive_for_test(client, &child_path(path, &child))?;
         }
@@ -1417,5 +1453,4 @@ mod tests {
             .map(|_| ())
             .map_err(map_zk_error)
     }
-
 }

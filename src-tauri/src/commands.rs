@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, State, Wry};
+use tauri::{AppHandle, Manager, State, Wry};
 
 use crate::domain::{
-    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto, TreeSnapshotDto,
-    ZkLogEntry,
+    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
+    ParserPluginRunResultDto, TreeSnapshotDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
+use crate::parser_plugins::{discover_plugins, run_plugin_with_bytes, to_dtos, ParserPluginDto};
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::live::LiveAdapter;
 use crate::zk_core::mock::MockAdapter;
@@ -18,25 +19,41 @@ pub struct AppState {
     pub mock: MockAdapter,
     pub log_store: Arc<ZkLogStore>,
     pub app_handle: Option<AppHandle<Wry>>,
+    plugin_root: PathBuf,
 }
 
 impl AppState {
     pub fn new(log_path: PathBuf, app_handle: AppHandle<Wry>) -> Self {
+        let plugin_root = app_handle
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("plugins");
         Self {
             sessions: Mutex::new(HashMap::new()),
             mock: MockAdapter::default(),
             log_store: Arc::new(ZkLogStore::new(log_path)),
             app_handle: Some(app_handle),
+            plugin_root,
         }
     }
 
     pub fn new_for_tests(log_path: PathBuf) -> Self {
+        Self::new_for_tests_with_plugin_root(log_path, PathBuf::from("target/test-plugins"))
+    }
+
+    pub fn new_for_tests_with_plugin_root(log_path: PathBuf, plugin_root: PathBuf) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             mock: MockAdapter::default(),
             log_store: Arc::new(ZkLogStore::new(log_path)),
             app_handle: None,
+            plugin_root,
         }
+    }
+
+    pub fn plugin_root(&self) -> PathBuf {
+        self.plugin_root.clone()
     }
 }
 
@@ -69,10 +86,7 @@ pub fn connect_server(
 }
 
 #[tauri::command]
-pub fn disconnect_server(
-    connection_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn disconnect_server(connection_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let mut sessions = state
         .sessions
         .lock()
@@ -231,4 +245,45 @@ pub fn read_zk_logs(
 #[tauri::command]
 pub fn clear_zk_logs(state: State<'_, AppState>) -> Result<(), String> {
     state.log_store.clear()
+}
+
+#[tauri::command]
+pub fn list_parser_plugins(state: State<'_, AppState>) -> Result<Vec<ParserPluginDto>, String> {
+    let definitions = discover_plugins(&state.plugin_root())?;
+    Ok(to_dtos(&definitions))
+}
+
+#[tauri::command]
+pub fn run_parser_plugin(
+    connection_id: String,
+    path: String,
+    plugin_id: String,
+    state: State<'_, AppState>,
+) -> Result<ParserPluginRunResultDto, String> {
+    let adapter = {
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "failed to acquire sessions lock".to_string())?;
+        sessions.get(&connection_id).cloned()
+    }
+    .ok_or_else(|| format!("no active session for connection {connection_id}"))?;
+
+    let plugin = discover_plugins(&state.plugin_root())?
+        .into_iter()
+        .find(|definition| definition.manifest.id == plugin_id)
+        .ok_or_else(|| format!("plugin not found: {plugin_id}"))?;
+
+    let bytes = adapter.get_node_bytes(&path)?;
+    let output = run_plugin_with_bytes(&plugin, &bytes, 5_000)?;
+
+    Ok(ParserPluginRunResultDto {
+        plugin_id: plugin.manifest.id,
+        plugin_name: plugin.manifest.name,
+        content: output.stdout,
+        generated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64,
+    })
 }

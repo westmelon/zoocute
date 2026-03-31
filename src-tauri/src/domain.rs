@@ -115,3 +115,12 @@ pub struct NodeDetailsDto {
     pub data_length: i32,
     pub ephemeral: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParserPluginRunResultDto {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub content: String,
+    pub generated_at: i64,
+}
