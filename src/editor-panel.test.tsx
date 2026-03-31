@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import React from "react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
@@ -19,6 +19,16 @@ const defaultProps = {
   onFetchServerValue: vi.fn().mockResolvedValue(null),
   saveError: null,
   draft: undefined,
+  connectionId: "conn-a",
+  nodePath: "/services/session_blob",
+  onListParserPlugins: vi.fn().mockResolvedValue([]),
+  onRunParserPlugin: vi.fn().mockResolvedValue({
+    pluginId: "",
+    pluginName: "",
+    content: "",
+    generatedAt: 0,
+  }),
+  onPluginError: vi.fn(),
 };
 
 // Wrapper that provides stateful draft + editing management for EditorPanel
@@ -39,6 +49,16 @@ function StatefulEditor({ path }: { path: string }) {
       onSave={vi.fn()}
       onDiscard={() => setDraft(undefined)}
       onFetchServerValue={vi.fn().mockResolvedValue("server value")}
+      connectionId="conn-a"
+      nodePath={path}
+      onListParserPlugins={vi.fn().mockResolvedValue([])}
+      onRunParserPlugin={vi.fn().mockResolvedValue({
+        pluginId: "",
+        pluginName: "",
+        content: "",
+        generatedAt: 0,
+      })}
+      onPluginError={vi.fn()}
     />
   );
 }
@@ -65,6 +85,16 @@ function renderEditor(
       onSave={onSave}
       onDiscard={onDiscard}
       onFetchServerValue={onFetchServerValue}
+      connectionId="conn-a"
+      nodePath={path}
+      onListParserPlugins={vi.fn().mockResolvedValue([])}
+      onRunParserPlugin={vi.fn().mockResolvedValue({
+        pluginId: "",
+        pluginName: "",
+        content: "",
+        generatedAt: 0,
+      })}
+      onPluginError={vi.fn()}
     />
   );
   return { onDraftChange, onSave, onDiscard, onFetchServerValue };
@@ -80,6 +110,113 @@ it("binary node shows read-only mode pill", () => {
     />
   );
   expect(screen.getByText(binaryNode.displayModeLabel)).toBeInTheDocument();
+});
+
+it("switches to plugin mode after a successful parse", async () => {
+  const user = userEvent.setup();
+  const listPlugins = vi.fn().mockResolvedValue([
+    { id: "dubbo-provider", name: "Dubbo Provider Decoder" },
+  ]);
+  const runPlugin = vi.fn().mockResolvedValue({
+    pluginId: "dubbo-provider",
+    pluginName: "Dubbo Provider Decoder",
+    content: "decoded payload",
+    generatedAt: 1,
+  });
+
+  render(
+    <EditorPanel
+      {...defaultProps}
+      node={binaryNode}
+      connectionId="conn-a"
+      nodePath="/services/session_blob"
+      onListParserPlugins={listPlugins}
+      onRunParserPlugin={runPlugin}
+      onPluginError={vi.fn()}
+    />
+  );
+
+  expect(await screen.findByLabelText("Plugin")).toBeInTheDocument();
+
+  await user.selectOptions(screen.getByLabelText("Plugin"), "dubbo-provider");
+  await user.click(screen.getByRole("button", { name: "Parse" }));
+
+  expect(await screen.findByRole("button", { name: "PLUGIN" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("textbox")).toHaveValue("decoded payload");
+});
+
+it("keeps the current view when plugin parsing fails", async () => {
+  const user = userEvent.setup();
+  const onPluginError = vi.fn();
+
+  render(
+    <EditorPanel
+      {...defaultProps}
+      node={binaryNode}
+      connectionId="conn-a"
+      nodePath="/services/session_blob"
+      onListParserPlugins={vi.fn().mockResolvedValue([
+        { id: "dubbo-provider", name: "Dubbo Provider Decoder" },
+      ])}
+      onRunParserPlugin={vi.fn().mockRejectedValue(new Error("exit code 7"))}
+      onPluginError={onPluginError}
+    />
+  );
+
+  expect(await screen.findByLabelText("Plugin")).toBeInTheDocument();
+
+  await user.selectOptions(screen.getByLabelText("Plugin"), "dubbo-provider");
+  await user.click(screen.getByRole("button", { name: "Parse" }));
+
+  expect(screen.getByRole("button", { name: "RAW" })).toHaveAttribute("aria-pressed", "true");
+  expect(onPluginError).toHaveBeenCalledWith("exit code 7");
+});
+
+it("resets plugin state when the node path changes", async () => {
+  const user = userEvent.setup();
+  const listPlugins = vi.fn().mockResolvedValue([
+    { id: "dubbo-provider", name: "Dubbo Provider Decoder" },
+  ]);
+  const runPlugin = vi.fn().mockResolvedValue({
+    pluginId: "dubbo-provider",
+    pluginName: "Dubbo Provider Decoder",
+    content: "decoded payload",
+    generatedAt: 1,
+  });
+
+  const { rerender } = render(
+    <EditorPanel
+      {...defaultProps}
+      node={binaryNode}
+      connectionId="conn-a"
+      nodePath="/services/session_blob"
+      onListParserPlugins={listPlugins}
+      onRunParserPlugin={runPlugin}
+      onPluginError={vi.fn()}
+    />
+  );
+
+  expect(await screen.findByLabelText("Plugin")).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText("Plugin"), "dubbo-provider");
+  await user.click(screen.getByRole("button", { name: "Parse" }));
+  expect(await screen.findByRole("button", { name: "PLUGIN" })).toHaveAttribute("aria-pressed", "true");
+
+  await act(async () => {
+    rerender(
+      <EditorPanel
+        {...defaultProps}
+        node={nodeDetailsByPath["/services/gateway"]}
+        connectionId="conn-a"
+        nodePath="/services/gateway"
+        onListParserPlugins={listPlugins}
+        onRunParserPlugin={runPlugin}
+        onPluginError={vi.fn()}
+      />
+    );
+  });
+
+  expect(screen.getByRole("button", { name: "RAW" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.queryByRole("button", { name: "PLUGIN" })).not.toBeInTheDocument();
 });
 
 it("JSON node shows editable mode pill", () => {

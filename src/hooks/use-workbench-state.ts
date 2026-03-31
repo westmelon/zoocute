@@ -539,6 +539,11 @@ export function useWorkbenchState() {
     setConnectionNotice(message);
   }
 
+  function showConnectionError(message: string) {
+    setConnectionNotice(null);
+    setConnectionError(message);
+  }
+
   async function disconnectSession(connectionId: string) {
     unlistenRefs.current.get(connectionId)?.();
     unlistenRefs.current.delete(connectionId);
@@ -909,6 +914,7 @@ export function useWorkbenchState() {
     testConnection,
     disconnectSession,
     showConnectionNotice,
+    showConnectionError,
     searchQuery: nodeSearch.searchQuery,
     setSearchQuery: nodeSearch.setSearchQuery,
     searchResults: nodeSearch.searchResults,
