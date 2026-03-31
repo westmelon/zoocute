@@ -1,6 +1,7 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
+import * as commands from "./lib/commands";
 import type { SavedConnection } from "./lib/types";
 
 const { getNodeDetailsMock } = vi.hoisted(() => ({
@@ -38,6 +39,13 @@ vi.mock("./lib/commands", () => ({
   createNode: vi.fn(async () => {}),
   deleteNode: vi.fn(async () => {}),
   loadFullTree: vi.fn(async () => []),
+  listParserPlugins: vi.fn(async () => []),
+  runParserPlugin: vi.fn(async () => ({
+    pluginId: "",
+    pluginName: "",
+    content: "",
+    generatedAt: 0,
+  })),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -107,5 +115,12 @@ describe("draft management", () => {
       result.current.discardDraft("/configs");
     });
     expect(result.current.drafts["/configs"]).toBeUndefined();
+  });
+});
+
+describe("parser plugin contracts", () => {
+  it("exposes parser plugin command wrappers for the editor flow", () => {
+    expect(commands.listParserPlugins).toBeTypeOf("function");
+    expect(commands.runParserPlugin).toBeTypeOf("function");
   });
 });

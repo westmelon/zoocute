@@ -1,4 +1,5 @@
 import type { ConnectionSummary, NodeDetails, NodeTreeItem } from "./types";
+import type { ParserPlugin } from "./types";
 
 export const connections: ConnectionSummary[] = [
   { id: "prod", name: "production-zk", status: "connected", region: "cn-shanghai" },
@@ -110,3 +111,8 @@ origin=internal`,
 };
 
 export const defaultNodePath = "/configs/payment/switches";
+
+export const parserPlugins: ParserPlugin[] = [
+  { id: "dubbo-provider", name: "Dubbo Provider Decoder" },
+  { id: "hessian-decoder", name: "Hessian Decoder" },
+];

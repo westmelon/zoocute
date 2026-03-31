@@ -69,8 +69,20 @@ export interface SearchResult {
 export type SearchMode = "tree" | "results";
 
 export type RibbonMode = "browse" | "connections" | "log";
-export type ViewMode = "raw" | "json" | "xml";
+export type ViewMode = "raw" | "json" | "xml" | "plugin";
 export type Charset = "UTF-8" | "GBK" | "ISO-8859-1";
+
+export interface ParserPlugin {
+  id: string;
+  name: string;
+}
+
+export interface ParserPluginResult {
+  pluginId: string;
+  pluginName: string;
+  content: string;
+  generatedAt: number;
+}
 
 export interface SavedConnection {
   id: string;

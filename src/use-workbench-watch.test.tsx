@@ -118,6 +118,13 @@ const {
     })),
     getTreeSnapshotMock: vi.fn(async () => treeSnapshot),
     loadFullTreeMock: vi.fn(async () => []),
+    listParserPlugins: vi.fn(async () => []),
+    runParserPlugin: vi.fn(async () => ({
+      pluginId: "",
+      pluginName: "",
+      content: "",
+      generatedAt: 0,
+    })),
     webviewListenMock: vi.fn(async (_eventName: string, cb: WatchHandler | CacheHandler) => {
       handlers.set(_eventName, cb);
       return unlistenMock;
