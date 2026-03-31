@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use zoocute_lib::parser_plugins::{discover_plugins, to_dtos};
+use zoocute_lib::parser_plugins::{discover_plugins, discover_plugins_with_diagnostics, to_dtos};
 
 fn temp_dir(name: &str) -> PathBuf {
     let suffix = SystemTime::now()
@@ -178,4 +178,33 @@ fn exposes_dto_conversion_for_frontend_use() {
     assert_eq!(dtos.len(), 1);
     assert_eq!(dtos[0].id, "dubbo-provider");
     assert_eq!(dtos[0].name, "Dubbo Provider Decoder");
+}
+
+#[test]
+fn discovery_reports_diagnostics_for_invalid_manifests_without_failing_valid_plugins() {
+    let root = temp_dir("plugin-diagnostics");
+    write_manifest(
+        &root.join("valid"),
+        r#"{
+            "id": "valid",
+            "name": "Valid Decoder",
+            "enabled": true,
+            "command": "java"
+        }"#,
+    );
+    write_manifest(
+        &root.join("invalid"),
+        r#"{
+            "name": "Broken",
+            "enabled": true,
+            "command": "java"
+        }"#,
+    );
+
+    let report = discover_plugins_with_diagnostics(&root).expect("diagnostics should load");
+
+    assert_eq!(report.plugins.len(), 1);
+    assert_eq!(report.plugins[0].manifest.id, "valid");
+    assert_eq!(report.warnings.len(), 1);
+    assert!(report.warnings[0].message.contains("id"));
 }

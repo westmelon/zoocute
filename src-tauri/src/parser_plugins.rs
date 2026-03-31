@@ -1,8 +1,10 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +33,18 @@ pub struct ParserPluginDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginDiscoveryWarning {
+    pub manifest_path: PathBuf,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginDiscoveryReport {
+    pub plugins: Vec<ParserPluginDefinition>,
+    pub warnings: Vec<PluginDiscoveryWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginExecutionOutput {
     pub stdout: String,
     pub stderr: String,
@@ -41,11 +55,19 @@ fn default_enabled() -> bool {
 }
 
 pub fn discover_plugins(root: &Path) -> Result<Vec<ParserPluginDefinition>, String> {
+    Ok(discover_plugins_with_diagnostics(root)?.plugins)
+}
+
+pub fn discover_plugins_with_diagnostics(root: &Path) -> Result<PluginDiscoveryReport, String> {
     if !root.exists() {
-        return Ok(Vec::new());
+        return Ok(PluginDiscoveryReport {
+            plugins: Vec::new(),
+            warnings: Vec::new(),
+        });
     }
 
     let mut definitions = Vec::new();
+    let mut warnings = Vec::new();
     let mut seen_ids = HashSet::new();
     let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
 
@@ -63,18 +85,34 @@ pub fn discover_plugins(root: &Path) -> Result<Vec<ParserPluginDefinition>, Stri
 
         let raw_manifest = match fs::read_to_string(&manifest_path) {
             Ok(raw) => raw,
-            Err(_) => continue,
+            Err(error) => {
+                warnings.push(PluginDiscoveryWarning {
+                    manifest_path: manifest_path.clone(),
+                    message: format!("failed to read manifest: {error}"),
+                });
+                continue;
+            }
         };
         let manifest: ParserPluginManifest = match serde_json::from_str(&raw_manifest) {
             Ok(manifest) => manifest,
-            Err(_) => continue,
+            Err(error) => {
+                warnings.push(PluginDiscoveryWarning {
+                    manifest_path: manifest_path.clone(),
+                    message: format!("failed to parse manifest JSON: {error}"),
+                });
+                continue;
+            }
         };
 
         if !manifest.enabled {
             continue;
         }
 
-        if let Err(_) = validate_manifest(&manifest, &manifest_path) {
+        if let Err(error) = validate_manifest(&manifest, &manifest_path) {
+            warnings.push(PluginDiscoveryWarning {
+                manifest_path: manifest_path.clone(),
+                message: error,
+            });
             continue;
         }
 
@@ -89,7 +127,10 @@ pub fn discover_plugins(root: &Path) -> Result<Vec<ParserPluginDefinition>, Stri
     }
 
     definitions.sort_by(|left, right| left.manifest.name.cmp(&right.manifest.name));
-    Ok(definitions)
+    Ok(PluginDiscoveryReport {
+        plugins: definitions,
+        warnings,
+    })
 }
 
 pub fn to_dtos(definitions: &[ParserPluginDefinition]) -> Vec<ParserPluginDto> {
@@ -105,7 +146,7 @@ pub fn to_dtos(definitions: &[ParserPluginDefinition]) -> Vec<ParserPluginDto> {
 pub fn run_plugin_with_bytes(
     plugin: &ParserPluginDefinition,
     bytes: &[u8],
-    _timeout_ms: u64,
+    timeout_ms: u64,
 ) -> Result<PluginExecutionOutput, String> {
     let mut child = Command::new(&plugin.manifest.command)
         .args(&plugin.manifest.args)
@@ -127,15 +168,49 @@ pub fn run_plugin_with_bytes(
             .map_err(|error| format!("failed to write plugin stdin: {error}"))?;
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("failed to wait for plugin {}: {error}", plugin.manifest.id))?;
+    let stdout_handle = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("failed to capture stdout for plugin {}", plugin.manifest.id))?;
+    let stderr_handle = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("failed to capture stderr for plugin {}", plugin.manifest.id))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout_reader = thread::spawn(move || read_pipe(stdout_handle));
+    let stderr_reader = thread::spawn(move || read_pipe(stderr_handle));
 
-    if !output.status.success() {
-        let code = output.status.code().unwrap_or(-1);
+    let start = Instant::now();
+    let status = loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("failed to wait for plugin {}: {error}", plugin.manifest.id))?
+        {
+            Some(status) => break status,
+            None if start.elapsed() >= Duration::from_millis(timeout_ms) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_reader(stdout_reader, "stdout")?;
+                let stderr = join_reader(stderr_reader, "stderr")?.trim().to_string();
+                let stderr_suffix = if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                };
+                return Err(format!(
+                    "plugin {} timed out after {} ms{}",
+                    plugin.manifest.name, timeout_ms, stderr_suffix
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+
+    let stdout = join_reader(stdout_reader, "stdout")?;
+    let stderr = join_reader(stderr_reader, "stderr")?.trim().to_string();
+
+    if !status.success() {
+        let code = status.code().unwrap_or(-1);
         let stderr_suffix = if stderr.is_empty() {
             String::new()
         } else {
@@ -148,6 +223,24 @@ pub fn run_plugin_with_bytes(
     }
 
     Ok(PluginExecutionOutput { stdout, stderr })
+}
+
+fn read_pipe<R: Read>(mut reader: R) -> Result<String, String> {
+    let mut buffer = Vec::new();
+    reader
+        .read_to_end(&mut buffer)
+        .map_err(|error| error.to_string())?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+}
+
+fn join_reader(
+    handle: thread::JoinHandle<Result<String, String>>,
+    stream_name: &str,
+) -> Result<String, String> {
+    handle
+        .join()
+        .map_err(|_| format!("failed to join plugin {stream_name} reader thread"))?
+        .map_err(|error| format!("failed to read plugin {stream_name}: {error}"))
 }
 
 fn validate_manifest(manifest: &ParserPluginManifest, manifest_path: &Path) -> Result<(), String> {

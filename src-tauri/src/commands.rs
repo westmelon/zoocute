@@ -9,7 +9,10 @@ use crate::domain::{
     ParserPluginRunResultDto, TreeSnapshotDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
-use crate::parser_plugins::{discover_plugins, run_plugin_with_bytes, to_dtos, ParserPluginDto};
+use crate::parser_plugins::{
+    discover_plugins_with_diagnostics, run_plugin_with_bytes, to_dtos, ParserPluginDefinition,
+    ParserPluginDto, PluginDiscoveryWarning,
+};
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::live::LiveAdapter;
 use crate::zk_core::mock::MockAdapter;
@@ -249,8 +252,7 @@ pub fn clear_zk_logs(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_parser_plugins(state: State<'_, AppState>) -> Result<Vec<ParserPluginDto>, String> {
-    let definitions = discover_plugins(&state.plugin_root())?;
-    Ok(to_dtos(&definitions))
+    list_parser_plugins_impl(&state)
 }
 
 #[tauri::command]
@@ -269,21 +271,181 @@ pub fn run_parser_plugin(
     }
     .ok_or_else(|| format!("no active session for connection {connection_id}"))?;
 
-    let plugin = discover_plugins(&state.plugin_root())?
-        .into_iter()
-        .find(|definition| definition.manifest.id == plugin_id)
-        .ok_or_else(|| format!("plugin not found: {plugin_id}"))?;
+    run_parser_plugin_with_loader(&state, &connection_id, &path, &plugin_id, |node_path| {
+        adapter.get_node_bytes(node_path)
+    })
+}
 
-    let bytes = adapter.get_node_bytes(&path)?;
+fn list_parser_plugins_impl(state: &AppState) -> Result<Vec<ParserPluginDto>, String> {
+    let report = discover_plugins_with_diagnostics(&state.plugin_root())?;
+    log_plugin_discovery_warnings(state, &report.warnings);
+    Ok(to_dtos(&report.plugins))
+}
+
+fn run_parser_plugin_with_loader<F>(
+    state: &AppState,
+    _connection_id: &str,
+    path: &str,
+    plugin_id: &str,
+    load_bytes: F,
+) -> Result<ParserPluginRunResultDto, String>
+where
+    F: FnOnce(&str) -> Result<Vec<u8>, String>,
+{
+    let report = discover_plugins_with_diagnostics(&state.plugin_root())?;
+    log_plugin_discovery_warnings(state, &report.warnings);
+    let plugin = find_plugin(report.plugins, plugin_id)?;
+    let bytes = load_bytes(path)?;
     let output = run_plugin_with_bytes(&plugin, &bytes, 5_000)?;
 
     Ok(ParserPluginRunResultDto {
-        plugin_id: plugin.manifest.id,
-        plugin_name: plugin.manifest.name,
+        plugin_id: plugin.manifest.id.clone(),
+        plugin_name: plugin.manifest.name.clone(),
         content: output.stdout,
         generated_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64,
     })
+}
+
+fn find_plugin(
+    plugins: Vec<ParserPluginDefinition>,
+    plugin_id: &str,
+) -> Result<ParserPluginDefinition, String> {
+    plugins
+        .into_iter()
+        .find(|definition| definition.manifest.id == plugin_id)
+        .ok_or_else(|| format!("plugin not found: {plugin_id}"))
+}
+
+fn log_plugin_discovery_warnings(state: &AppState, warnings: &[PluginDiscoveryWarning]) {
+    for warning in warnings {
+        state.log_store.append_operation(
+            None,
+            "parser_plugin_discovery_warning",
+            None,
+            false,
+            &warning.message,
+            None,
+            Some(serde_json::json!({
+                "manifestPath": warning.manifest_path.display().to_string(),
+            })),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{list_parser_plugins_impl, run_parser_plugin_with_loader, AppState};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("zoocute-{name}-{suffix}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_manifest(dir: &PathBuf, contents: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("plugin.json"), contents).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn echo_command_args() -> (&'static str, Vec<&'static str>) {
+        (
+            "powershell",
+            vec![
+                "-NoProfile",
+                "-Command",
+                "$reader = New-Object System.IO.BinaryReader([Console]::OpenStandardInput()); $bytes = $reader.ReadBytes(4); [Console]::Out.Write([System.BitConverter]::ToString($bytes))",
+            ],
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn echo_command_args() -> (&'static str, Vec<&'static str>) {
+        (
+            "sh",
+            vec![
+                "-c",
+                "python3 -c 'import sys; data=sys.stdin.buffer.read(4); sys.stdout.write(\"-\".join(f\"{b:02X}\" for b in data))'",
+            ],
+        )
+    }
+
+    #[test]
+    fn list_parser_plugins_impl_returns_valid_plugins_and_logs_invalid_manifests() {
+        let plugin_root = temp_dir("command-list-plugins");
+        let log_path = plugin_root.join("command-log.jsonl");
+        write_manifest(
+            &plugin_root.join("valid"),
+            r#"{
+                "id": "valid",
+                "name": "Valid Decoder",
+                "enabled": true,
+                "command": "java"
+            }"#,
+        );
+        write_manifest(
+            &plugin_root.join("invalid"),
+            r#"{
+                "name": "Broken",
+                "enabled": true,
+                "command": "java"
+            }"#,
+        );
+        let state = AppState::new_for_tests_with_plugin_root(log_path, plugin_root);
+
+        let plugins = list_parser_plugins_impl(&state).expect("plugins should load");
+        let logs = state.log_store.read_recent(10).expect("logs should load");
+
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].id, "valid");
+        assert!(logs.iter().any(|entry| {
+            entry.operation == "parser_plugin_discovery_warning"
+                && entry.message.contains("id")
+        }));
+    }
+
+    #[test]
+    fn run_parser_plugin_with_loader_executes_plugin_lookup_and_maps_result_dto() {
+        let plugin_root = temp_dir("command-run-plugin");
+        let log_path = plugin_root.join("command-log.jsonl");
+        let (command, args) = echo_command_args();
+        write_manifest(
+            &plugin_root.join("echoer"),
+            &format!(
+                r#"{{
+                    "id": "echoer",
+                    "name": "Echoer",
+                    "enabled": true,
+                    "command": "{command}",
+                    "args": {args}
+                }}"#,
+                args = serde_json::to_string(&args).unwrap(),
+            ),
+        );
+        let state = AppState::new_for_tests_with_plugin_root(log_path, plugin_root);
+
+        let result = run_parser_plugin_with_loader(
+            &state,
+            "conn-a",
+            "/services/session_blob",
+            "echoer",
+            |_| Ok(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        )
+        .expect("plugin should run");
+
+        assert_eq!(result.plugin_id, "echoer");
+        assert_eq!(result.plugin_name, "Echoer");
+        assert_eq!(result.content.trim(), "DE-AD-BE-EF");
+        assert!(result.generated_at > 0);
+    }
 }
