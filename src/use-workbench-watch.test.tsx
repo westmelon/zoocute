@@ -182,6 +182,13 @@ vi.mock("./lib/commands", () => ({
   createNode: vi.fn(async () => {}),
   deleteNode: vi.fn(async () => {}),
   loadFullTree: loadFullTreeMock,
+  listParserPlugins: vi.fn(async () => []),
+  runParserPlugin: vi.fn(async () => ({
+    pluginId: "",
+    pluginName: "",
+    content: "",
+    generatedAt: 0,
+  })),
 }));
 
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
