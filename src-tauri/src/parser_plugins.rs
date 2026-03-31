@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -37,6 +38,7 @@ pub fn discover_plugins(root: &Path) -> Result<Vec<ParserPluginDefinition>, Stri
     }
 
     let mut definitions = Vec::new();
+    let mut seen_ids = HashSet::new();
     let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
 
     for entry in entries {
@@ -51,18 +53,29 @@ pub fn discover_plugins(root: &Path) -> Result<Vec<ParserPluginDefinition>, Stri
             continue;
         }
 
-        let raw_manifest = fs::read_to_string(&manifest_path).map_err(|error| {
-            format!("{}: {error}", manifest_path.display())
-        })?;
-        let manifest: ParserPluginManifest = serde_json::from_str(&raw_manifest).map_err(|error| {
-            format!("{}: {error}", manifest_path.display())
-        })?;
+        let raw_manifest = match fs::read_to_string(&manifest_path) {
+            Ok(raw) => raw,
+            Err(_) => continue,
+        };
+        let manifest: ParserPluginManifest = match serde_json::from_str(&raw_manifest) {
+            Ok(manifest) => manifest,
+            Err(_) => continue,
+        };
 
         if !manifest.enabled {
             continue;
         }
 
-        validate_manifest(&manifest, &manifest_path)?;
+        if let Err(_) = validate_manifest(&manifest, &manifest_path) {
+            continue;
+        }
+
+        if !seen_ids.insert(manifest.id.clone()) {
+            return Err(format!(
+                "duplicate enabled plugin id: {}",
+                manifest.id
+            ));
+        }
 
         definitions.push(ParserPluginDefinition {
             manifest,

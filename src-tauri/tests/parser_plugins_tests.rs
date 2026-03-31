@@ -100,8 +100,63 @@ fn rejects_manifest_without_id() {
         }"#,
     );
 
-    let error = discover_plugins(&root).expect_err("manifest should fail");
-    assert!(error.contains("id"));
+    let plugins = discover_plugins(&root).expect("invalid plugins should be skipped");
+
+    assert!(plugins.is_empty());
+}
+
+#[test]
+fn discovers_valid_plugins_when_invalid_plugins_coexist() {
+    let root = temp_dir("plugin-mixed");
+    write_manifest(
+        &root.join("valid"),
+        r#"{
+            "id": "valid",
+            "name": "Valid Decoder",
+            "enabled": true,
+            "command": "java"
+        }"#,
+    );
+    write_manifest(
+        &root.join("invalid"),
+        r#"{
+            "name": "Broken",
+            "enabled": true,
+            "command": "java",
+            "args": ["-jar", "parser.jar"]
+        }"#,
+    );
+
+    let plugins = discover_plugins(&root).expect("valid plugins should still load");
+
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0].manifest.id, "valid");
+}
+
+#[test]
+fn rejects_duplicate_enabled_plugin_ids() {
+    let root = temp_dir("plugin-duplicate");
+    write_manifest(
+        &root.join("first"),
+        r#"{
+            "id": "duplicate",
+            "name": "First Decoder",
+            "enabled": true,
+            "command": "java"
+        }"#,
+    );
+    write_manifest(
+        &root.join("second"),
+        r#"{
+            "id": "duplicate",
+            "name": "Second Decoder",
+            "enabled": true,
+            "command": "java"
+        }"#,
+    );
+
+    let error = discover_plugins(&root).expect_err("duplicate enabled ids should fail");
+    assert!(error.contains("duplicate"));
 }
 
 #[test]
