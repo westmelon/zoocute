@@ -172,3 +172,18 @@ it("shows plugin output in plugin mode", () => {
 
   expect(screen.getByRole("textbox")).toHaveValue("decoded output");
 });
+
+it("falls back to raw content when plugin mode has no plugin output", () => {
+  render(
+    <NodeContentPanel
+      value="raw"
+      pluginContent={null}
+      viewMode="plugin"
+      isEditing={false}
+      onChange={vi.fn()}
+      onFallbackToRaw={vi.fn()}
+    />
+  );
+
+  expect(screen.getByRole("textbox")).toHaveValue("raw");
+});

@@ -125,7 +125,13 @@ export function NodeContentPanel({
   onFallbackToRaw,
 }: NodeContentPanelProps) {
   if (viewMode === "plugin") {
-    return <ContentTextarea value={pluginContent ?? ""} isEditing={false} onChange={onChange} />;
+    return (
+      <ContentTextarea
+        value={pluginContent ?? value}
+        isEditing={false}
+        onChange={onChange}
+      />
+    );
   }
 
   if (viewMode === "json") {

@@ -1,6 +1,6 @@
 import type { Charset, ParserPlugin, ViewMode } from "../lib/types";
 
-interface EditorToolbarProps {
+interface EditorToolbarBaseProps {
   isEditing: boolean;
   isDirty: boolean;
   viewMode: ViewMode;
@@ -11,13 +11,27 @@ interface EditorToolbarProps {
   onDiff: () => void;
   onDiscard: () => void;
   onSave: () => void;
-  plugins?: ParserPlugin[];
-  selectedPluginId?: string;
-  onPluginChange?: (pluginId: string) => void;
-  onParsePlugin?: () => void;
-  pluginResultAvailable?: boolean;
-  isPluginParsing?: boolean;
 }
+
+type EditorToolbarPluginProps =
+  | {
+      plugins: ParserPlugin[];
+      selectedPluginId: string;
+      onPluginChange: (pluginId: string) => void;
+      onParsePlugin: () => void;
+      pluginResultAvailable: boolean;
+      isPluginParsing: boolean;
+    }
+  | {
+      plugins?: undefined;
+      selectedPluginId?: undefined;
+      onPluginChange?: undefined;
+      onParsePlugin?: undefined;
+      pluginResultAvailable?: undefined;
+      isPluginParsing?: undefined;
+    };
+
+type EditorToolbarProps = EditorToolbarBaseProps & EditorToolbarPluginProps;
 
 const VIEW_MODES: { value: ViewMode; label: string; requiresResult?: boolean }[] = [
   { value: "raw", label: "RAW" },
@@ -39,14 +53,25 @@ export function EditorToolbar({
   onDiff,
   onDiscard,
   onSave,
-  plugins = [],
-  selectedPluginId = "",
-  onPluginChange = () => {},
-  onParsePlugin = () => {},
-  pluginResultAvailable = false,
-  isPluginParsing = false,
+  plugins,
+  selectedPluginId,
+  onPluginChange,
+  onParsePlugin,
+  pluginResultAvailable,
+  isPluginParsing,
 }: EditorToolbarProps) {
-  const visibleModes = VIEW_MODES.filter((mode) => !mode.requiresResult || pluginResultAvailable);
+  const pluginControls = plugins
+    ? {
+        plugins,
+        selectedPluginId,
+        onPluginChange,
+        onParsePlugin,
+        pluginResultAvailable,
+        isPluginParsing,
+      }
+    : null;
+  const pluginResultVisible = pluginControls?.pluginResultAvailable ?? false;
+  const visibleModes = VIEW_MODES.filter((mode) => !mode.requiresResult || pluginResultVisible);
 
   return (
     <div className="editor-toolbar">
@@ -82,16 +107,16 @@ export function EditorToolbar({
         </select>
       )}
 
-      {plugins.length > 0 ? (
+      {pluginControls && pluginControls.plugins.length > 0 ? (
         <>
           <select
             aria-label="Plugin"
             className="toolbar-plugin-select"
-            value={selectedPluginId}
-            onChange={(e) => onPluginChange(e.target.value)}
+            value={pluginControls.selectedPluginId}
+            onChange={(e) => pluginControls.onPluginChange(e.target.value)}
           >
             <option value="">Select plugin</option>
-            {plugins.map((plugin) => (
+            {pluginControls.plugins.map((plugin) => (
               <option key={plugin.id} value={plugin.id}>
                 {plugin.name}
               </option>
@@ -101,10 +126,10 @@ export function EditorToolbar({
           <button
             type="button"
             className="btn"
-            onClick={onParsePlugin}
-            disabled={!selectedPluginId || isPluginParsing}
+            onClick={pluginControls.onParsePlugin}
+            disabled={!pluginControls.selectedPluginId || pluginControls.isPluginParsing}
           >
-            {isPluginParsing ? "Parsing..." : "Parse"}
+            {pluginControls.isPluginParsing ? "Parsing..." : "Parse"}
           </button>
         </>
       ) : null}
