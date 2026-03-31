@@ -1,5 +1,5 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
 import * as commands from "./lib/commands";
 import type { ParserPlugin, ParserPluginResult, SavedConnection } from "./lib/types";
@@ -128,6 +128,8 @@ describe("parser plugin contracts", () => {
       generatedAt: 1,
     };
 
+    expectTypeOf(plugin).toMatchTypeOf<ParserPlugin>();
+    expectTypeOf(result).toMatchTypeOf<ParserPluginResult>();
     expect(plugin.name).toContain("Decoder");
     expect(result.content).toBe("decoded output");
   });
