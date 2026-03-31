@@ -169,6 +169,8 @@ type EnsureChildrenResult = {
   addedPaths: string[];
 };
 
+type ConnectionAction = "connect" | "test";
+
 function treeNodesToSnapshotNodes(
   nodes: NodeTreeItem[],
   parentPath: string | null,
@@ -189,8 +191,48 @@ function treeNodesToSnapshotNodes(
   return snapshotNodes;
 }
 
-function shouldReplaceSnapshot(existing: TreeSnapshot | undefined, next: TreeSnapshot): boolean {
+function snapshotStatusRank(status: TreeSnapshot["status"]): number {
+  switch (status) {
+    case "stale":
+      return 0;
+    case "bootstrapping":
+      return 1;
+    case "resyncing":
+      return 2;
+    case "live":
+      return 3;
+  }
+}
+
+function haveSameSnapshotPaths(
+  left: TreeSnapshot["nodes"],
+  right: TreeSnapshot["nodes"]
+): boolean {
+  if (left.length !== right.length) return false;
+  const leftPaths = new Set(left.map((node) => node.path));
+  for (const node of right) {
+    if (!leftPaths.has(node.path)) return false;
+  }
   return true;
+}
+
+function shouldReplaceSnapshot(existing: TreeSnapshot | undefined, next: TreeSnapshot): boolean {
+  if (next.nodes.length === 0 && next.status !== "live") {
+    return false;
+  }
+  if (!existing) {
+    return next.nodes.length > 0 || next.status === "live";
+  }
+
+  const nextRank = snapshotStatusRank(next.status);
+  const existingRank = snapshotStatusRank(existing.status);
+
+  if (nextRank > existingRank) return true;
+  if (next.nodes.length > existing.nodes.length) return true;
+  if (next.nodes.length === existing.nodes.length) {
+    return nextRank >= existingRank && !haveSameSnapshotPaths(existing.nodes, next.nodes);
+  }
+  return false;
 }
 
 export function useWorkbenchState() {
@@ -217,6 +259,8 @@ export function useWorkbenchState() {
   const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [connectionAction, setConnectionAction] = useState<ConnectionAction | null>(null);
+  const [pendingConnectionId, setPendingConnectionId] = useState<string | null>(null);
   const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
   const [indexingConnections, setIndexingConnections] = useState<Set<string>>(new Set());
   const [, setCacheSnapshotVersion] = useState(0);
@@ -225,6 +269,22 @@ export function useWorkbenchState() {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  useEffect(() => {
+    if (!connectionError) return;
+    const timer = setTimeout(() => {
+      setConnectionError((current) => (current === connectionError ? null : current));
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [connectionError]);
+
+  useEffect(() => {
+    if (!connectionNotice) return;
+    const timer = setTimeout(() => {
+      setConnectionNotice((current) => (current === connectionNotice ? null : current));
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [connectionNotice]);
 
   function commitSession(connectionId: string, nextSession: ActiveSession) {
     sessionsRef.current = new Map(sessionsRef.current).set(connectionId, nextSession);
@@ -381,6 +441,8 @@ export function useWorkbenchState() {
     connectionId: string;
   }) {
     setIsConnecting(true);
+    setConnectionAction("connect");
+    setPendingConnectionId(params.connectionId);
     setConnectionError(null);
     setConnectionNotice(null);
     let connected = false;
@@ -396,15 +458,15 @@ export function useWorkbenchState() {
       addSession(conn, rootNodes);
       nodeSearch.indexNodes(params.connectionId, "/", rootNodes);
       setRibbonMode("browse");
-      void cacheTreeSnapshot(params.connectionId);
-      void ensureWatchListener(params.connectionId).catch((error) => {
+      await ensureWatchListener(params.connectionId).catch((error) => {
         setConnectionError(
           error instanceof Error ? `watch listener 注册失败: ${error.message}` : "watch listener 注册失败"
         );
       });
-      void ensureCacheListener(params.connectionId).catch(() => {
+      await ensureCacheListener(params.connectionId).catch(() => {
         // cache listener setup is best-effort and must not surface as a user-facing connection error
       });
+      void cacheTreeSnapshot(params.connectionId);
 
       // Background: recursively fetch the full tree so all nodes are searchable,
       // not just the ones the user has expanded. Runs after UI is already shown.
@@ -433,6 +495,8 @@ export function useWorkbenchState() {
       setConnectionError(formatConnectionError(error));
     } finally {
       setIsConnecting(false);
+      setConnectionAction(null);
+      setPendingConnectionId(null);
     }
   }
 
@@ -443,6 +507,8 @@ export function useWorkbenchState() {
     connectionId: string;
   }) {
     setIsConnecting(true);
+    setConnectionAction("test");
+    setPendingConnectionId(params.connectionId);
     setConnectionError(null);
     setConnectionNotice(null);
     try {
@@ -463,6 +529,8 @@ export function useWorkbenchState() {
         // best-effort cleanup for test-only connections
       }
       setIsConnecting(false);
+      setConnectionAction(null);
+      setPendingConnectionId(null);
     }
   }
 
@@ -517,11 +585,21 @@ export function useWorkbenchState() {
       const children = await listChildren(connectionId, path);
       const current = sessionsRef.current.get(connectionId);
       if (!current) return undefined;
-      const newTree = replaceChildren(current.treeNodes, path, children);
+      const knownExpandablePaths = new Set(
+        (cacheSnapshotsRef.current.get(connectionId)?.nodes ?? [])
+          .filter((node) => node.hasChildren)
+          .map((node) => node.path)
+      );
+      const normalizedChildren = children.map((child) =>
+        child.hasChildren || !knownExpandablePaths.has(child.path)
+          ? child
+          : { ...child, hasChildren: true }
+      );
+      const newTree = replaceChildren(current.treeNodes, path, normalizedChildren);
       const patchedTree =
         path === "/"
           ? newTree
-          : patchNodeMeta(newTree, path, { hasChildren: children.length > 0 });
+          : patchNodeMeta(newTree, path, { hasChildren: normalizedChildren.length > 0 });
       commitSession(connectionId, {
         ...current,
         treeNodes: patchedTree,
@@ -532,13 +610,13 @@ export function useWorkbenchState() {
         })(),
       });
       syncCacheSnapshot(connectionId, patchedTree);
-      nodeSearch.indexNodes(connectionId, path, children);
+      nodeSearch.indexNodes(connectionId, path, normalizedChildren);
 
-      const addedPaths = children
+      const addedPaths = normalizedChildren
         .filter((c) => !prevPaths.has(c.path))
         .map((c) => c.path);
 
-      return { children, addedPaths };
+      return { children: normalizedChildren, addedPaths };
     } catch (error) {
       const isDeletedDuringRefresh = options?.force && path !== "/" && isNoNodeError(error);
       updateSession(connectionId, (s) => ({
@@ -808,6 +886,8 @@ export function useWorkbenchState() {
     connectionNotice,
     saveError,
     isConnecting,
+    connectionAction,
+    pendingConnectionId,
     pendingNavPath,
     openNode,
     confirmNavAndDiscard,
@@ -838,5 +918,3 @@ export function useWorkbenchState() {
     locate,
   };
 }
-
-

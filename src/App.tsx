@@ -34,6 +34,7 @@ export default function App() {
     createNode, deleteNode,
     submitConnection, testConnection, disconnectSession,
     showConnectionNotice,
+    isConnecting, connectionAction, pendingConnectionId,
     savedConnections, setSavedConnections,
     selectedConnectionId, setSelectedConnectionId,
     searchQuery, setSearchQuery, searchResults, searchMode, locate, isIndexing,
@@ -101,7 +102,9 @@ export default function App() {
           <ConnectionPane
             connections={savedConnections}
             selectedId={selectedConnectionId}
-            connectedId={activeTabId}
+            connectedIds={new Set(sessions.keys())}
+            isConnecting={isConnecting}
+            pendingConnectionId={pendingConnectionId}
             onSelect={setSelectedConnectionId}
             onNew={() => {
               const newConn = {
@@ -180,6 +183,8 @@ export default function App() {
         {ribbonMode === "connections" && selectedConn && (
           <ConnectionDetail
             connection={selectedConn}
+            isConnecting={isConnecting && pendingConnectionId === selectedConn.id}
+            isTesting={connectionAction === "test" && pendingConnectionId === selectedConn.id}
             onSave={(c) => {
               setSavedConnections((prev) => prev.map((x) => (x.id === c.id ? c : x)));
               showConnectionNotice("保存成功");

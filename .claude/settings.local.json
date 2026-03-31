@@ -12,7 +12,8 @@
       "Bash(find /Users/neolin/.cargo -name *.rs -path *zookeeper-0*)",
       "Bash(npm test:*)",
       "Bash(npx tsc:*)",
-      "Bash(npx vitest:*)"
+      "Bash(npx vitest:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }

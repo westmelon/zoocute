@@ -380,6 +380,8 @@ body {
   border: none;
   outline: none;
   resize: none;
+  display: block;
+  flex: none;
   font-family: ui-monospace, "Cascadia Code", monospace;
   font-size: 12px;
   line-height: 1.6;
@@ -641,10 +643,38 @@ body {
   border-color: var(--border);
   color: var(--text-primary);
 }
+.conn-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .conn-icon-btn--danger:hover {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 36%, var(--border));
   background: var(--danger-subtle);
+}
+.conn-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  display: inline-block;
+  animation: connSpin 0.8s linear infinite;
+}
+.conn-pending-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+@keyframes connSpin {
+  to { transform: rotate(360deg); }
 }
 .conn-tooltip-target {
   position: relative;

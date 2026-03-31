@@ -13,6 +13,16 @@ export class PathSearchIndex {
     }
   }
 
+  childPaths(parentPath: string): string[] {
+    const childPaths: string[] = [];
+    for (const node of this.byPath.values()) {
+      if (node.parentPath === parentPath) {
+        childPaths.push(node.path);
+      }
+    }
+    return childPaths;
+  }
+
   /** Remove all direct children of `parentPath`. Used before re-indexing after a refresh. */
   removeChildren(parentPath: string): void {
     for (const [path, node] of this.byPath) {

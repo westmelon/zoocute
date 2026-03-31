@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use tauri::{async_runtime, AppHandle, Emitter, Wry};
@@ -23,27 +24,30 @@ pub struct LiveAdapter {
     children_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
     data_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
     cache: Arc<std::sync::Mutex<ConnectionCache>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
 struct ChildrenWatcher {
-    client: Arc<Client>,
+    client: Weak<Client>,
     app_handle: AppHandle<Wry>,
     connection_id: String,
     path: String,
     log_store: Arc<ZkLogStore>,
     active_paths: Arc<std::sync::Mutex<HashSet<String>>>,
     cache: Arc<std::sync::Mutex<ConnectionCache>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
 struct DataWatcher {
-    client: Arc<Client>,
+    client: Weak<Client>,
     app_handle: AppHandle<Wry>,
     connection_id: String,
     path: String,
     log_store: Arc<ZkLogStore>,
     active_paths: Arc<std::sync::Mutex<HashSet<String>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 fn now_millis() -> i64 {
@@ -150,6 +154,14 @@ fn clear_active_watch(
     guard.remove(path);
 }
 
+fn is_shutdown(shutdown: &Arc<AtomicBool>) -> bool {
+    shutdown.load(Ordering::SeqCst)
+}
+
+fn upgrade_client(client: &Weak<Client>) -> Result<Arc<Client>, String> {
+    client.upgrade().ok_or_else(|| "client disconnected".to_string())
+}
+
 fn spawn_children_watch_task(watcher: ChildrenWatcher, oneshot: OneshotWatcher) {
     async_runtime::spawn(async move {
         handle_children_watch_event(watcher, oneshot.changed().await);
@@ -158,6 +170,9 @@ fn spawn_children_watch_task(watcher: ChildrenWatcher, oneshot: OneshotWatcher) 
 
 fn handle_children_watch_event(watcher: ChildrenWatcher, event: WatchedEvent) {
     clear_active_watch(&watcher.active_paths, &watcher.path);
+    if is_shutdown(&watcher.shutdown) {
+        return;
+    }
     append_watch_log(
         &watcher.log_store,
         &watcher.connection_id,
@@ -195,6 +210,9 @@ fn handle_children_watch_event(watcher: ChildrenWatcher, event: WatchedEvent) {
 
     if should_reregister {
         std::thread::spawn(move || {
+            if is_shutdown(&watcher.shutdown) {
+                return;
+            }
             let result = if event_type == "children_changed" {
                 refresh_cached_children(&watcher)
             } else {
@@ -272,6 +290,9 @@ fn spawn_data_watch_task(watcher: DataWatcher, oneshot: OneshotWatcher) {
 
 fn handle_data_watch_event(watcher: DataWatcher, event: WatchedEvent) {
     clear_active_watch(&watcher.active_paths, &watcher.path);
+    if is_shutdown(&watcher.shutdown) {
+        return;
+    }
     append_watch_log(
         &watcher.log_store,
         &watcher.connection_id,
@@ -309,6 +330,9 @@ fn handle_data_watch_event(watcher: DataWatcher, event: WatchedEvent) {
 
     if should_reregister {
         std::thread::spawn(move || {
+            if is_shutdown(&watcher.shutdown) {
+                return;
+            }
             let result = register_data_watch(&watcher).map(|_| ());
             match result {
                 Ok(_) => append_watch_log(
@@ -337,8 +361,12 @@ fn handle_data_watch_event(watcher: DataWatcher, event: WatchedEvent) {
 }
 
 fn register_children_watch(watcher: &ChildrenWatcher) -> Result<Vec<String>, String> {
+    if is_shutdown(&watcher.shutdown) {
+        return Err("client disconnected".to_string());
+    }
+    let client = upgrade_client(&watcher.client)?;
     if should_register_watch(&watcher.active_paths, &watcher.path) {
-        match async_runtime::block_on(watcher.client.list_and_watch_children(&watcher.path))
+        match async_runtime::block_on(client.list_and_watch_children(&watcher.path))
             .map_err(map_zk_error)
         {
             Ok((children, oneshot)) => {
@@ -351,15 +379,19 @@ fn register_children_watch(watcher: &ChildrenWatcher) -> Result<Vec<String>, Str
             }
         }
     } else {
-        async_runtime::block_on(watcher.client.list_children(&watcher.path)).map_err(map_zk_error)
+        async_runtime::block_on(client.list_children(&watcher.path)).map_err(map_zk_error)
     }
 }
 
 fn register_data_watch(
     watcher: &DataWatcher,
 ) -> Result<(Vec<u8>, zookeeper_client::Stat), String> {
+    if is_shutdown(&watcher.shutdown) {
+        return Err("client disconnected".to_string());
+    }
+    let client = upgrade_client(&watcher.client)?;
     if should_register_watch(&watcher.active_paths, &watcher.path) {
-        match async_runtime::block_on(watcher.client.get_and_watch_data(&watcher.path))
+        match async_runtime::block_on(client.get_and_watch_data(&watcher.path))
             .map_err(map_zk_error)
         {
             Ok((data, stat, oneshot)) => {
@@ -372,7 +404,7 @@ fn register_data_watch(
             }
         }
     } else {
-        async_runtime::block_on(watcher.client.get_data(&watcher.path)).map_err(map_zk_error)
+        async_runtime::block_on(client.get_data(&watcher.path)).map_err(map_zk_error)
     }
 }
 
@@ -441,6 +473,7 @@ impl LiveAdapter {
             children_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
             data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
             cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
+            shutdown: Arc::new(AtomicBool::new(false)),
         };
         mark_cache_resyncing(&adapter.cache);
         append_cache_resync_log(&adapter.log_store, &adapter.connection_id, "cache_resync_started", "/");
@@ -449,16 +482,26 @@ impl LiveAdapter {
     }
 
     pub fn bootstrap_subtree_cache(&self) {
-        let client = Arc::clone(&self.client);
+        let client = Arc::downgrade(&self.client);
         let cache = Arc::clone(&self.cache);
         let connection_id = self.connection_id.clone();
         let log_store = Arc::clone(&self.log_store);
         let app_handle = self.app_handle.clone();
+        let shutdown = Arc::clone(&self.shutdown);
 
         std::thread::spawn(move || {
+            if is_shutdown(&shutdown) {
+                return;
+            }
+            let Ok(client) = upgrade_client(&client) else {
+                return;
+            };
             append_cache_log(&log_store, &connection_id, "cache_bootstrap_started", "/");
             match collect_full_tree_records(client.as_ref()) {
                 Ok(nodes) => {
+                    if is_shutdown(&shutdown) {
+                        return;
+                    }
                     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
                     guard.replace_all(nodes);
                     guard.mark_live();
@@ -525,6 +568,18 @@ impl LiveAdapter {
             meta: None,
         });
         result
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.children_watch_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.data_watch_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     pub fn create_node(&self, path: &str, data: &str) -> Result<(), String> {
@@ -772,13 +827,14 @@ impl ReadOnlyZkAdapter for LiveAdapter {
 impl LiveAdapter {
     fn do_list_children(&self, path: &str) -> Result<Vec<LoadedTreeNodeDto>, String> {
         let watcher = ChildrenWatcher {
-            client: Arc::clone(&self.client),
+            client: Arc::downgrade(&self.client),
             app_handle: self.app_handle.clone(),
             connection_id: self.connection_id.clone(),
             path: path.to_string(),
             log_store: Arc::clone(&self.log_store),
             active_paths: Arc::clone(&self.children_watch_paths),
             cache: Arc::clone(&self.cache),
+            shutdown: Arc::clone(&self.shutdown),
         };
         let children = register_children_watch(&watcher)?;
         children
@@ -802,12 +858,13 @@ impl LiveAdapter {
 
     fn do_get_node(&self, path: &str) -> Result<NodeDetailsDto, String> {
         let watcher = DataWatcher {
-            client: Arc::clone(&self.client),
+            client: Arc::downgrade(&self.client),
             app_handle: self.app_handle.clone(),
             connection_id: self.connection_id.clone(),
             path: path.to_string(),
             log_store: Arc::clone(&self.log_store),
             active_paths: Arc::clone(&self.data_watch_paths),
+            shutdown: Arc::clone(&self.shutdown),
         };
         let (data, stat) = register_data_watch(&watcher)?;
         let interp = interpret_data(&data);
@@ -996,18 +1053,20 @@ fn load_child_records(
 
 fn list_child_records_with_watch(watcher: &ChildrenWatcher) -> Result<Vec<NodeRecord>, String> {
     let child_names = register_children_watch(watcher)?;
-    load_child_records(&watcher.client, &watcher.path, child_names)
+    let client = upgrade_client(&watcher.client)?;
+    load_child_records(client.as_ref(), &watcher.path, child_names)
 }
 
 fn seed_subtree_cache(watcher: &ChildrenWatcher, path: &str) -> Result<(), String> {
     let branch_watcher = ChildrenWatcher {
-        client: Arc::clone(&watcher.client),
+        client: watcher.client.clone(),
         app_handle: watcher.app_handle.clone(),
         connection_id: watcher.connection_id.clone(),
         path: path.to_string(),
         log_store: Arc::clone(&watcher.log_store),
         active_paths: Arc::clone(&watcher.active_paths),
         cache: Arc::clone(&watcher.cache),
+        shutdown: Arc::clone(&watcher.shutdown),
     };
     let child_records = list_child_records_with_watch(&branch_watcher)?;
     {
@@ -1215,6 +1274,14 @@ mod tests {
         assert_eq!(event.event_type, "snapshot_ready");
         assert_eq!(event.parent_path, None);
         assert!(event.paths.is_empty());
+    }
+
+    #[test]
+    fn shutdown_flag_is_observed() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        assert!(!is_shutdown(&shutdown));
+        shutdown.store(true, Ordering::SeqCst);
+        assert!(is_shutdown(&shutdown));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { OverlayScrollbarsComponent } from "overlayscrollbars-react";
 import type { ViewMode } from "../lib/types";
 
@@ -42,9 +43,35 @@ function ContentTextarea({
   isEditing: boolean;
   onChange: (v: string) => void;
 }) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  function syncTextareaHeight() {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }
+
+  useEffect(() => {
+    syncTextareaHeight();
+  }, [value, isEditing]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    const host = textarea?.parentElement;
+    if (!host || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      syncTextareaHeight();
+    });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <OverlayScrollbarsComponent element="div" className="editor-body" options={OS_OPTIONS} defer>
       <textarea
+        ref={textareaRef}
         className="editor-textarea"
         value={value}
         onChange={(e) => onChange(e.target.value)}

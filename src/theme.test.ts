@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-
-// Provide a #root element so main.tsx can mount without throwing
-const root = document.createElement("div");
-root.id = "root";
-document.body.appendChild(root);
+import { injectTheme } from "./app-bootstrap";
 
 describe("theme tokens", () => {
   beforeEach(() => {
@@ -26,10 +22,8 @@ describe("theme tokens", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });
 
-  it("injectTheme sets data-theme from system preference", async () => {
-    vi.resetModules();
-    const mod = await import("./main");
-    mod.injectTheme();
+  it("injectTheme sets data-theme from system preference", () => {
+    injectTheme();
     const attr = document.documentElement.getAttribute("data-theme");
     expect(["light", "dark"]).toContain(attr);
   });

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SavedConnection } from "../lib/types";
 import { ScrollArea } from "./scroll-area";
 
@@ -51,11 +51,12 @@ function TrashIcon() {
   );
 }
 
-// ─── ConnectionPane（左面板列表）────────────────────────
 interface ConnectionPaneProps {
   connections: SavedConnection[];
   selectedId: string | null;
-  connectedId: string | null;
+  connectedIds: Set<string>;
+  isConnecting: boolean;
+  pendingConnectionId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
   onConnect: (c: SavedConnection) => void;
@@ -64,11 +65,20 @@ interface ConnectionPaneProps {
 }
 
 export function ConnectionPane({
-  connections, selectedId, connectedId,
-  onSelect, onNew, onConnect, onDisconnect, onDelete,
+  connections,
+  selectedId,
+  connectedIds,
+  isConnecting,
+  pendingConnectionId,
+  onSelect,
+  onNew,
+  onConnect,
+  onDisconnect,
+  onDelete,
 }: ConnectionPaneProps) {
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tooltipHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function clearTooltipTimer() {
     if (tooltipTimerRef.current !== null) {
@@ -77,14 +87,23 @@ export function ConnectionPane({
     }
   }
 
+  function clearTooltipHideTimer() {
+    if (tooltipHideTimerRef.current !== null) {
+      clearTimeout(tooltipHideTimerRef.current);
+      tooltipHideTimerRef.current = null;
+    }
+  }
+
   function hideTooltip() {
     clearTooltipTimer();
+    clearTooltipHideTimer();
     setTooltip(null);
   }
 
   function scheduleTooltip(text: string, target: EventTarget | null) {
     if (!(target instanceof HTMLElement)) return;
     clearTooltipTimer();
+    clearTooltipHideTimer();
     tooltipTimerRef.current = setTimeout(() => {
       const rect = target.getBoundingClientRect();
       const showAbove = rect.top > 44;
@@ -93,6 +112,10 @@ export function ConnectionPane({
         x: rect.left + rect.width / 2,
         y: showAbove ? rect.top - 8 : rect.bottom + 8,
       });
+      tooltipHideTimerRef.current = setTimeout(() => {
+        setTooltip(null);
+        tooltipHideTimerRef.current = null;
+      }, 1800);
       tooltipTimerRef.current = null;
     }, 500);
   }
@@ -106,18 +129,40 @@ export function ConnectionPane({
     };
   }
 
+  useEffect(
+    () => () => {
+      clearTooltipTimer();
+      clearTooltipHideTimer();
+    },
+    []
+  );
+
   return (
     <>
       <div className="panel-header">
         <span className="panel-title">连接管理</span>
-        <button className="btn btn-primary" style={{ padding: "2px 8px", fontSize: "11px" }} onClick={onNew}>
+        <button
+          className="btn btn-primary"
+          style={{ padding: "2px 8px", fontSize: "11px" }}
+          onClick={onNew}
+          disabled={isConnecting}
+        >
           + 新建
         </button>
       </div>
       <ScrollArea className="conn-list">
         {connections.map((c) => {
           const isSelected = selectedId === c.id;
-          const isConnected = connectedId === c.id;
+          const isConnected = connectedIds.has(c.id);
+          const isPendingConnect =
+            isConnecting && pendingConnectionId === c.id && !isConnected;
+          const stateLabel = isConnected ? `${c.name} 已连接` : `${c.name} 未连接`;
+          const actionLabel = isPendingConnect
+            ? `连接中 ${c.name}`
+            : isConnected
+              ? `断开 ${c.name}`
+              : `连接 ${c.name}`;
+
           return (
             <div
               key={c.id}
@@ -126,8 +171,8 @@ export function ConnectionPane({
             >
               <span
                 className={`conn-server-icon conn-tooltip-target${isConnected ? " conn-server-icon--on" : ""}`}
-                data-tooltip={isConnected ? `${c.name} 已连接` : `${c.name} 未连接`}
-                {...bindTooltip(isConnected ? `${c.name} 已连接` : `${c.name} 未连接`)}
+                data-tooltip={stateLabel}
+                {...bindTooltip(stateLabel)}
               >
                 {isConnected ? <ConnectedStatusIcon /> : <DisconnectedStatusIcon />}
               </span>
@@ -138,18 +183,26 @@ export function ConnectionPane({
               <div className="conn-card-actions" onClick={(e) => e.stopPropagation()}>
                 <button
                   className="conn-icon-btn conn-tooltip-target"
-                  data-tooltip={isConnected ? `断开 ${c.name}` : `连接 ${c.name}`}
-                  aria-label={isConnected ? `断开 ${c.name}` : `连接 ${c.name}`}
-                  onClick={() => isConnected ? onDisconnect(c.id) : onConnect(c)}
-                  {...bindTooltip(isConnected ? `断开 ${c.name}` : `连接 ${c.name}`)}
+                  data-tooltip={actionLabel}
+                  aria-label={actionLabel}
+                  disabled={isConnecting && !isConnected}
+                  onClick={() => (isConnected ? onDisconnect(c.id) : onConnect(c))}
+                  {...bindTooltip(actionLabel)}
                 >
-                  {isConnected ? <UnlinkIcon /> : <LinkIcon />}
+                  {isPendingConnect ? (
+                    <span className="conn-spinner" aria-hidden="true" />
+                  ) : isConnected ? (
+                    <UnlinkIcon />
+                  ) : (
+                    <LinkIcon />
+                  )}
                 </button>
                 {!isConnected && (
                   <button
                     className="conn-icon-btn conn-icon-btn--danger conn-tooltip-target"
                     data-tooltip={`删除 ${c.name}`}
                     aria-label={`删除 ${c.name}`}
+                    disabled={isConnecting}
                     onClick={() => onDelete(c.id)}
                     {...bindTooltip(`删除 ${c.name}`)}
                   >
@@ -162,7 +215,7 @@ export function ConnectionPane({
         })}
         {connections.length === 0 && (
           <p style={{ color: "var(--text-muted)", fontSize: "12px", padding: "8px" }}>
-            暂无连接，点击「+ 新建」添加
+            暂无连接，点击“新建”添加
           </p>
         )}
       </ScrollArea>
@@ -179,19 +232,25 @@ export function ConnectionPane({
   );
 }
 
-// ─── ConnectionDetail（右侧表单）────────────────────────
 interface ConnectionDetailProps {
   connection: SavedConnection;
+  isConnecting: boolean;
+  isTesting: boolean;
   onSave: (c: SavedConnection) => void;
   onTestConnect: (c: SavedConnection) => void;
 }
 
-export function ConnectionDetail({ connection, onSave, onTestConnect }: ConnectionDetailProps) {
+export function ConnectionDetail({
+  connection,
+  isConnecting,
+  isTesting,
+  onSave,
+  onTestConnect,
+}: ConnectionDetailProps) {
   const [form, setForm] = useState<SavedConnection>(connection);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const fieldId = (name: string) => `conn-${form.id}-${name}`;
 
-  // Reset form when connection prop changes
   if (form.id !== connection.id) {
     setForm(connection);
     setErrors({});
@@ -211,6 +270,12 @@ export function ConnectionDetail({ connection, onSave, onTestConnect }: Connecti
   return (
     <div className="conn-form">
       <p className="conn-form-title">{form.name || "新连接"}</p>
+      {isConnecting && (
+        <div className="conn-pending-banner" role="status" aria-live="polite">
+          <span className="conn-spinner" aria-hidden="true" />
+          <span>{isTesting ? "正在测试连接，请稍候..." : "正在连接，请稍候..."}</span>
+        </div>
+      )}
       <div className="form-grid">
         <label className="form-label" htmlFor={fieldId("connection-string")}>连接地址</label>
         <div>
@@ -218,6 +283,7 @@ export function ConnectionDetail({ connection, onSave, onTestConnect }: Connecti
             id={fieldId("connection-string")}
             className={`form-input${errors.connectionString ? " form-input-error" : ""}`}
             value={form.connectionString}
+            disabled={isConnecting}
             onChange={(e) => update("connectionString", e.target.value)}
             placeholder="host:port"
           />
@@ -230,6 +296,7 @@ export function ConnectionDetail({ connection, onSave, onTestConnect }: Connecti
           id={fieldId("name")}
           className="form-input"
           value={form.name}
+          disabled={isConnecting}
           onChange={(e) => update("name", e.target.value)}
           placeholder="可选"
         />
@@ -238,6 +305,7 @@ export function ConnectionDetail({ connection, onSave, onTestConnect }: Connecti
           id={fieldId("username")}
           className="form-input"
           value={form.username ?? ""}
+          disabled={isConnecting}
           onChange={(e) => update("username", e.target.value)}
           placeholder="可选"
         />
@@ -247,6 +315,7 @@ export function ConnectionDetail({ connection, onSave, onTestConnect }: Connecti
           type="password"
           className="form-input"
           value={form.password ?? ""}
+          disabled={isConnecting}
           onChange={(e) => update("password", e.target.value)}
           placeholder="可选"
         />
@@ -256,14 +325,27 @@ export function ConnectionDetail({ connection, onSave, onTestConnect }: Connecti
           className="form-input"
           type="number"
           value={form.timeoutMs}
+          disabled={isConnecting}
           onChange={(e) => update("timeoutMs", parseInt(e.target.value, 10))}
         />
       </div>
       <div className="form-actions">
-        <button className="btn btn-primary" onClick={() => { if (validate()) onTestConnect(form); }}>
-          测试连接
+        <button
+          className="btn btn-primary"
+          disabled={isConnecting}
+          onClick={() => {
+            if (validate()) onTestConnect(form);
+          }}
+        >
+          {isTesting ? "测试中..." : "测试连接"}
         </button>
-        <button className="btn" onClick={() => { if (validate()) onSave(form); }}>
+        <button
+          className="btn"
+          disabled={isConnecting}
+          onClick={() => {
+            if (validate()) onSave(form);
+          }}
+        >
           保存
         </button>
       </div>

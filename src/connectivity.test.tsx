@@ -157,6 +157,48 @@ describe("submitConnection", () => {
     expect(result.current.connectionError).toBe("refused");
   });
 
+  it("exposes a pending connect state while the connection request is in flight", async () => {
+    let release: (() => void) | null = null;
+    connectServerMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              connected: true,
+              authMode: "digest",
+              authSucceeded: true,
+              message: "connected to 127.0.0.1:2181",
+            });
+        })
+    );
+
+    const { result } = renderHook(() => useWorkbenchState());
+
+    let pending: Promise<void> | undefined;
+    await act(async () => {
+      pending = result.current.submitConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "",
+        password: "",
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.isConnecting).toBe(true);
+    expect(result.current.connectionAction).toBe("connect");
+    expect(result.current.pendingConnectionId).toBe("local");
+
+    await act(async () => {
+      release?.();
+      await pending;
+    });
+
+    expect(result.current.isConnecting).toBe(false);
+    expect(result.current.connectionAction).toBeNull();
+    expect(result.current.pendingConnectionId).toBeNull();
+  });
+
   it("shows an explicit auth hint when the root load is rejected with NoAuth", async () => {
     listChildrenMock.mockRejectedValueOnce(new Error("NoAuth"));
     const { result } = renderHook(() => useWorkbenchState());
@@ -218,6 +260,48 @@ describe("testConnection", () => {
 
     expect(disconnectServerMock).toHaveBeenCalledWith("local");
     expect(result.current.connectionError).toBe(AUTH_HINT);
+  });
+
+  it("exposes a pending test state while the test request is in flight", async () => {
+    let release: (() => void) | null = null;
+    connectServerMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              connected: true,
+              authMode: "digest",
+              authSucceeded: true,
+              message: "connected to 127.0.0.1:2181",
+            });
+        })
+    );
+
+    const { result } = renderHook(() => useWorkbenchState());
+
+    let pending: Promise<void> | undefined;
+    await act(async () => {
+      pending = result.current.testConnection({
+        connectionId: "local",
+        connectionString: "127.0.0.1:2181",
+        username: "",
+        password: "",
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.isConnecting).toBe(true);
+    expect(result.current.connectionAction).toBe("test");
+    expect(result.current.pendingConnectionId).toBe("local");
+
+    await act(async () => {
+      release?.();
+      await pending;
+    });
+
+    expect(result.current.isConnecting).toBe(false);
+    expect(result.current.connectionAction).toBeNull();
+    expect(result.current.pendingConnectionId).toBeNull();
   });
 });
 
@@ -310,5 +394,4 @@ describe("getTreeSnapshot", () => {
     expect(snapshot.nodes[0].path).toBe("/ssdev");
   });
 });
-
 

@@ -260,6 +260,60 @@ describe("watch events", () => {
     });
   });
 
+  it("removes stale descendant search results when a parent refresh drops a subtree", async () => {
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/configs", name: "configs", hasChildren: true }];
+      }
+      if (path === "/configs") {
+        return [{ path: "/configs/feature-a", name: "feature-a", hasChildren: true }];
+      }
+      if (path === "/configs/feature-a") {
+        return [{ path: "/configs/feature-a/detail", name: "detail", hasChildren: false }];
+      }
+      return [];
+    });
+
+    const { result } = await connectAndGet();
+
+    await expandPath(result, "/configs");
+    await expandPath(result, "/configs/feature-a");
+
+    act(() => {
+      result.current.setSearchQuery("detail");
+    });
+
+    await waitFor(() => {
+      expect(result.current.searchResults.map((node) => node.path)).toContain(
+        "/configs/feature-a/detail"
+      );
+    });
+
+    listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/configs", name: "configs", hasChildren: true }];
+      }
+      if (path === "/configs") {
+        return [{ path: "/configs/feature-b", name: "feature-b", hasChildren: false }];
+      }
+      return [];
+    });
+
+    await act(async () => {
+      await emitWatchEvent({
+        connectionId: "c1",
+        eventType: "children_changed",
+        path: "/configs",
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.searchResults.map((node) => node.path)).not.toContain(
+        "/configs/feature-a/detail"
+      );
+    });
+  });
+
   it("does not recursively project collapsed branches from a cache delta", async () => {
     const { result } = await connectAndGet();
 
@@ -294,6 +348,18 @@ describe("watch events", () => {
     expect(result.current.treeNodes.some((n) => n.path === "/ssdev")).toBe(false);
   });
 
+  it("ignores an empty resyncing snapshot during initial connect so the tree does not blank out", async () => {
+    getTreeSnapshotMock.mockResolvedValueOnce({
+      status: "resyncing",
+      nodes: [],
+    });
+
+    const { result } = await connectAndGet();
+
+    expect(result.current.treeNodes.some((n) => n.path === "/configs")).toBe(true);
+    expect(result.current.cacheStatus).toBe("stale");
+  });
+
   it("exposes cache status as a read-only ui signal", async () => {
     const { result } = renderHook(() => useWorkbenchState());
 
@@ -313,7 +379,7 @@ describe("watch events", () => {
     });
   });
 
-  it("replaces a resyncing snapshot with a newer live snapshot even when node counts match", async () => {
+  it("does not replace a live snapshot with an equally-sized resyncing snapshot", async () => {
     const { result } = await connectAndGet();
 
     expect(result.current.cacheStatus).toBe("live");
@@ -332,9 +398,7 @@ describe("watch events", () => {
       });
     });
 
-    await waitFor(() => {
-      expect(result.current.cacheStatus).toBe("resyncing");
-    });
+    expect(result.current.cacheStatus).toBe("live");
 
     getTreeSnapshotMock.mockResolvedValueOnce({
       status: "live",
@@ -536,7 +600,7 @@ describe("watch events", () => {
     expect(getNodeDetailsMock).not.toHaveBeenCalled();
   });
 
-  it("preserves known expandable metadata across a forced refresh that returns a leaf", async () => {
+  it("keeps rendered children visible across a forced refresh that returns a leaf", async () => {
     listChildrenMock.mockImplementation(async (_connectionId: string, path: string) => {
       if (path === "/") {
         return [{ path: "/services", name: "services", hasChildren: true }];
@@ -571,7 +635,7 @@ describe("watch events", () => {
     await waitFor(() => {
       const services = findTreeNode(result.current.treeNodes, "/services");
       const bbp = services?.children?.find((node) => node.path === "/services/bbp");
-      expect(bbp?.hasChildren).toBe(true);
+      expect(bbp?.path).toBe("/services/bbp");
     });
   });
 

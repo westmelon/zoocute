@@ -77,7 +77,9 @@ pub fn disconnect_server(
         .sessions
         .lock()
         .map_err(|_| "failed to acquire sessions lock".to_string())?;
-    sessions.remove(&connection_id);
+    if let Some(adapter) = sessions.remove(&connection_id) {
+        adapter.shutdown();
+    }
     Ok(())
 }
 

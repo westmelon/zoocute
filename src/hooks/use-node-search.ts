@@ -32,6 +32,12 @@ export function useNodeSearch(activeTabId: string | null) {
     nodes: NodeTreeItem[]
   ): void {
     const idx = getOrCreate(connectionId);
+    const nextChildPaths = new Set(nodes.map((node) => node.path));
+    for (const childPath of idx.childPaths(parentPath)) {
+      if (!nextChildPaths.has(childPath)) {
+        idx.removeSubtree(childPath);
+      }
+    }
     idx.removeChildren(parentPath);
     idx.insertMany(nodes.map((n) => toCachedNode(n, parentPath)));
   }
