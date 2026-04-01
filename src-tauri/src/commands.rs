@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State, Wry};
 
 use crate::domain::{
@@ -17,47 +20,206 @@ use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::live::LiveAdapter;
 use crate::zk_core::mock::MockAdapter;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettingsDto {
+    pub theme: String,
+    pub write_mode: String,
+    pub plugin_directory: Option<String>,
+}
+
+impl Default for AppSettingsDto {
+    fn default() -> Self {
+        Self {
+            theme: "system".to_string(),
+            write_mode: "readonly".to_string(),
+            plugin_directory: None,
+        }
+    }
+}
+
 pub struct AppState {
     pub sessions: Mutex<HashMap<String, LiveAdapter>>,
     pub mock: MockAdapter,
     pub log_store: Arc<ZkLogStore>,
     pub app_handle: Option<AppHandle<Wry>>,
-    plugin_root: PathBuf,
+    settings: Mutex<AppSettingsDto>,
+    settings_path: PathBuf,
+    default_plugin_root: PathBuf,
 }
 
 impl AppState {
     pub fn new(log_path: PathBuf, app_handle: AppHandle<Wry>) -> Self {
-        let plugin_root = app_handle
+        let app_data_dir = app_handle
             .path()
             .app_data_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("plugins");
+            .unwrap_or_else(|_| PathBuf::from("."));
+        let settings_path = app_data_dir.join("settings.json");
+        let default_plugin_root = app_data_dir.join("plugins");
+        let settings = load_settings_from_path(&settings_path);
         Self {
             sessions: Mutex::new(HashMap::new()),
             mock: MockAdapter::default(),
             log_store: Arc::new(ZkLogStore::new(log_path)),
             app_handle: Some(app_handle),
-            plugin_root,
+            settings: Mutex::new(settings),
+            settings_path,
+            default_plugin_root,
         }
     }
 
     pub fn new_for_tests(log_path: PathBuf) -> Self {
-        Self::new_for_tests_with_plugin_root(log_path, PathBuf::from("target/test-plugins"))
+        Self::new_for_tests_with_paths(
+            log_path,
+            PathBuf::from("target/test-settings.json"),
+            PathBuf::from("target/test-plugins"),
+        )
     }
 
     pub fn new_for_tests_with_plugin_root(log_path: PathBuf, plugin_root: PathBuf) -> Self {
+        Self::new_for_tests_with_paths(log_path, PathBuf::from("target/test-settings.json"), plugin_root)
+    }
+
+    pub fn new_for_tests_with_paths(
+        log_path: PathBuf,
+        settings_path: PathBuf,
+        default_plugin_root: PathBuf,
+    ) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             mock: MockAdapter::default(),
             log_store: Arc::new(ZkLogStore::new(log_path)),
             app_handle: None,
-            plugin_root,
+            settings: Mutex::new(load_settings_from_path(&settings_path)),
+            settings_path,
+            default_plugin_root,
         }
     }
 
     pub fn plugin_root(&self) -> PathBuf {
-        self.plugin_root.clone()
+        let settings = self
+            .settings
+            .lock()
+            .map_err(|_| "failed to acquire settings lock".to_string())
+            .ok();
+        if let Some(plugin_directory) = settings.and_then(|settings| settings.plugin_directory.clone())
+        {
+            return PathBuf::from(plugin_directory);
+        }
+        self.default_plugin_root.clone()
     }
+
+    pub fn get_settings(&self) -> AppSettingsDto {
+        self.settings
+            .lock()
+            .map(|settings| settings.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_write_mode(&self, write_mode: String) -> Result<AppSettingsDto, String> {
+        match write_mode.as_str() {
+            "readonly" | "readwrite" => self.update_settings(|settings| {
+                settings.write_mode = write_mode;
+            }),
+            _ => Err(format!("invalid write mode: {write_mode}")),
+        }
+    }
+
+    pub fn set_theme(&self, theme: String) -> Result<AppSettingsDto, String> {
+        match theme.as_str() {
+            "system" | "light" | "dark" => self.update_settings(|settings| {
+                settings.theme = theme;
+            }),
+            _ => Err(format!("invalid theme preference: {theme}")),
+        }
+    }
+
+    pub fn set_plugin_directory(
+        &self,
+        plugin_directory: Option<String>,
+    ) -> Result<AppSettingsDto, String> {
+        self.update_settings(|settings| {
+            settings.plugin_directory = plugin_directory.and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            });
+        })
+    }
+
+    pub fn ensure_write_enabled(&self) -> Result<(), String> {
+        let settings = self
+            .settings
+            .lock()
+            .map_err(|_| "failed to acquire settings lock".to_string())?;
+        if settings.write_mode == "readonly" {
+            return Err("当前为只读模式，禁止新增、修改、删除节点。".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn default_plugin_root(&self) -> PathBuf {
+        self.default_plugin_root.clone()
+    }
+
+    fn update_settings<F>(&self, update: F) -> Result<AppSettingsDto, String>
+    where
+        F: FnOnce(&mut AppSettingsDto),
+    {
+        let mut settings = self
+            .settings
+            .lock()
+            .map_err(|_| "failed to acquire settings lock".to_string())?;
+        update(&mut settings);
+        persist_settings_to_path(&self.settings_path, &settings)?;
+        Ok(settings.clone())
+    }
+}
+
+fn load_settings_from_path(path: &PathBuf) -> AppSettingsDto {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<AppSettingsDto>(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn persist_settings_to_path(path: &PathBuf, settings: &AppSettingsDto) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let raw = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
+    fs::write(path, raw).map_err(|error| error.to_string())
+}
+
+fn open_path_in_file_manager(path: &PathBuf) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("explorer");
+        command.arg(path);
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(path);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+
+    command
+        .spawn()
+        .map_err(|error| format!("failed to open directory {}: {error}", path.display()))?;
+    Ok(())
 }
 
 impl Default for AppState {
@@ -163,6 +325,7 @@ pub fn save_node(
     value: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.ensure_write_enabled()?;
     let adapter = {
         let sessions = state
             .sessions
@@ -183,6 +346,7 @@ pub fn create_node(
     data: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.ensure_write_enabled()?;
     let adapter = {
         let sessions = state
             .sessions
@@ -203,6 +367,7 @@ pub fn delete_node(
     recursive: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    state.ensure_write_enabled()?;
     let adapter = {
         let sessions = state
             .sessions
@@ -248,6 +413,58 @@ pub fn read_zk_logs(
 #[tauri::command]
 pub fn clear_zk_logs(state: State<'_, AppState>) -> Result<(), String> {
     state.log_store.clear()
+}
+
+#[tauri::command]
+pub fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettingsDto, String> {
+    Ok(state.get_settings())
+}
+
+#[tauri::command]
+pub fn set_theme_preference(
+    theme: String,
+    state: State<'_, AppState>,
+) -> Result<AppSettingsDto, String> {
+    state.set_theme(theme)
+}
+
+#[tauri::command]
+pub fn set_write_mode(
+    write_mode: String,
+    state: State<'_, AppState>,
+) -> Result<AppSettingsDto, String> {
+    state.set_write_mode(write_mode)
+}
+
+#[tauri::command]
+pub fn choose_plugin_directory(state: State<'_, AppState>) -> Result<Option<AppSettingsDto>, String> {
+    let selected = rfd::FileDialog::new().pick_folder();
+    match selected {
+        Some(path) => state.set_plugin_directory(Some(path.display().to_string())).map(Some),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub fn reset_plugin_directory(state: State<'_, AppState>) -> Result<AppSettingsDto, String> {
+    state.set_plugin_directory(None)
+}
+
+#[tauri::command]
+pub fn get_effective_plugin_directory(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.plugin_root().display().to_string())
+}
+
+#[tauri::command]
+pub fn open_plugin_directory(state: State<'_, AppState>) -> Result<(), String> {
+    let plugin_root = state.plugin_root();
+    fs::create_dir_all(&plugin_root).map_err(|error| {
+        format!(
+            "failed to prepare plugin directory {}: {error}",
+            plugin_root.display()
+        )
+    })?;
+    open_path_in_file_manager(&plugin_root)
 }
 
 #[tauri::command]

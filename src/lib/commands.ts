@@ -1,11 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppSettings,
   ConnectionResult,
   NodeDetails,
   NodeTreeItem,
   ParserPlugin,
   ParserPluginResult,
+  ThemePreference,
   TreeSnapshot,
+  WriteMode,
   ZkLogEntry,
 } from "./types";
 
@@ -79,6 +82,34 @@ export async function readZkLogs(limit?: number): Promise<ZkLogEntry[]> {
 
 export async function clearZkLogs(): Promise<void> {
   await invoke("clear_zk_logs");
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  return invoke("get_app_settings");
+}
+
+export async function setThemePreference(theme: ThemePreference): Promise<AppSettings> {
+  return invoke("set_theme_preference", { theme });
+}
+
+export async function setWriteMode(writeMode: WriteMode): Promise<AppSettings> {
+  return invoke("set_write_mode", { writeMode });
+}
+
+export async function choosePluginDirectory(): Promise<AppSettings | null> {
+  return invoke("choose_plugin_directory");
+}
+
+export async function resetPluginDirectory(): Promise<AppSettings> {
+  return invoke("reset_plugin_directory");
+}
+
+export async function getEffectivePluginDirectory(): Promise<string> {
+  return invoke("get_effective_plugin_directory");
+}
+
+export async function openPluginDirectory(): Promise<void> {
+  await invoke("open_plugin_directory");
 }
 
 export async function listParserPlugins(): Promise<ParserPlugin[]> {

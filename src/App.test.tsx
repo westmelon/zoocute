@@ -1,12 +1,12 @@
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import App from "./App";
 
-it("renders the ZooCute ribbon shell with only the connections icon on startup", () => {
+it("renders the ribbon shell with the settings entry", () => {
   render(<App />);
   expect(screen.getByTitle("连接管理")).toBeInTheDocument();
-  expect(screen.queryByTitle("节点树")).not.toBeInTheDocument();
-  expect(screen.queryByTitle("操作日志")).not.toBeInTheDocument();
+  expect(screen.getByTitle("设置")).toBeInTheDocument();
 });
 
 it("starts in connections mode showing the connection list", () => {
@@ -15,13 +15,24 @@ it("starts in connections mode showing the connection list", () => {
   expect(document.querySelector(".server-tabs")).not.toBeInTheDocument();
 });
 
-it("shows a success toast after saving a connection", () => {
+it("opens the settings panel from the ribbon button with readonly selected by default", async () => {
+  localStorage.removeItem("zoocute:settings");
+  const user = userEvent.setup();
+
+  render(<App />);
+  await user.click(screen.getByTitle("设置"));
+
+  expect(screen.getByText("外观")).toBeInTheDocument();
+  expect(screen.getByLabelText("只读")).toBeChecked();
+});
+
+it("shows a success toast after saving a connection", async () => {
+  const user = userEvent.setup();
   render(<App />);
 
-  fireEvent.change(screen.getByLabelText("名称"), {
-    target: { value: "新的本地连接" },
-  });
-  fireEvent.click(screen.getByText("保存"));
+  await user.clear(screen.getByLabelText("名称"));
+  await user.type(screen.getByLabelText("名称"), "新的本地连接");
+  await user.click(screen.getByText("保存"));
 
   expect(screen.getByText("保存成功")).toBeInTheDocument();
   expect(screen.getByDisplayValue("新的本地连接")).toBeInTheDocument();
@@ -29,12 +40,12 @@ it("shows a success toast after saving a connection", () => {
 
 it("auto-hides the success toast after a short delay", async () => {
   vi.useFakeTimers();
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   render(<App />);
 
-  fireEvent.change(screen.getByLabelText("名称"), {
-    target: { value: "新的本地连接" },
-  });
-  fireEvent.click(screen.getByText("保存"));
+  await user.clear(screen.getByLabelText("名称"));
+  await user.type(screen.getByLabelText("名称"), "新的本地连接");
+  await user.click(screen.getByText("保存"));
 
   expect(screen.getByText("保存成功")).toBeInTheDocument();
 

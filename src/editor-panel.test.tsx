@@ -11,6 +11,7 @@ const binaryNode = nodeDetailsByPath["/services/session_blob"];
 
 const defaultProps = {
   isEditing: false,
+  isReadOnly: false,
   onEnterEdit: vi.fn(),
   onExitEdit: vi.fn(),
   onDraftChange: vi.fn(),
@@ -43,6 +44,7 @@ function StatefulEditor({ path }: { path: string }) {
       draft={draft}
       saveError={null}
       isEditing={isEditing}
+      isReadOnly={false}
       onEnterEdit={() => setIsEditing(true)}
       onExitEdit={() => setIsEditing(false)}
       onDraftChange={setDraft}
@@ -79,6 +81,7 @@ function renderEditor(
       draft={opts.draft}
       saveError={null}
       isEditing={opts.isEditing ?? false}
+      isReadOnly={false}
       onEnterEdit={vi.fn()}
       onExitEdit={vi.fn()}
       onDraftChange={onDraftChange}

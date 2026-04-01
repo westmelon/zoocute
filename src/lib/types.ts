@@ -71,6 +71,14 @@ export type SearchMode = "tree" | "results";
 export type RibbonMode = "browse" | "connections" | "log";
 export type ViewMode = "raw" | "json" | "xml" | "plugin";
 export type Charset = "UTF-8" | "GBK" | "ISO-8859-1";
+export type ThemePreference = "system" | "light" | "dark";
+export type WriteMode = "readonly" | "readwrite";
+
+export interface AppSettings {
+  theme: ThemePreference;
+  writeMode: WriteMode;
+  pluginDirectory: string | null;
+}
 
 export interface ParserPlugin {
   id: string;

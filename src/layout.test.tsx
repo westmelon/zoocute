@@ -5,29 +5,51 @@ import { Ribbon } from "./components/ribbon";
 import { usePanelResize } from "./hooks/use-panel-resize";
 
 describe("Ribbon", () => {
-  it("renders browse, connections, log buttons", () => {
-    render(<Ribbon mode="browse" onModeChange={() => {}} hasActiveSessions={true} />);
-    expect(screen.getByTitle("节点树")).toBeInTheDocument();
+  it("renders browse, connections, log, and settings buttons", () => {
+    render(
+      <Ribbon
+        mode="browse"
+        onModeChange={() => {}}
+        hasActiveSessions={true}
+        onOpenSettings={() => {}}
+      />
+    );
+    expect(screen.getByTitle("节点浏览")).toBeInTheDocument();
     expect(screen.getByTitle("连接管理")).toBeInTheDocument();
     expect(screen.getByTitle("操作日志")).toBeInTheDocument();
+    expect(screen.getByTitle("设置")).toBeInTheDocument();
   });
 
-  it("marks active mode with active class", () => {
-    render(<Ribbon mode="connections" onModeChange={() => {}} hasActiveSessions={true} />);
+  it("marks the active mode button with the active class", () => {
+    render(
+      <Ribbon
+        mode="connections"
+        onModeChange={() => {}}
+        hasActiveSessions={true}
+        onOpenSettings={() => {}}
+      />
+    );
     expect(screen.getByTitle("连接管理").closest(".ribbon-btn")).toHaveClass("active");
-    expect(screen.getByTitle("节点树").closest(".ribbon-btn")).not.toHaveClass("active");
+    expect(screen.getByTitle("节点浏览").closest(".ribbon-btn")).not.toHaveClass("active");
   });
 
-  it("calls onModeChange when a button is clicked", () => {
-    const handler = vi.fn();
-    render(<Ribbon mode="browse" onModeChange={handler} hasActiveSessions={true} />);
-    fireEvent.click(screen.getByTitle("连接管理").closest(".ribbon-btn")!);
-    expect(handler).toHaveBeenCalledWith("connections");
+  it("calls onModeChange when a mode button is clicked", () => {
+    const onModeChange = vi.fn();
+    render(
+      <Ribbon
+        mode="browse"
+        onModeChange={onModeChange}
+        hasActiveSessions={true}
+        onOpenSettings={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByTitle("连接管理"));
+    expect(onModeChange).toHaveBeenCalledWith("connections");
   });
 });
 
 describe("usePanelResize", () => {
-  it("returns defaultWidth initially", () => {
+  it("returns the default width initially", () => {
     const { result } = renderHook(() => usePanelResize(220, "test-key"));
     expect(result.current.width).toBe(220);
   });

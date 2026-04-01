@@ -4,33 +4,37 @@ interface RibbonProps {
   mode: RibbonMode;
   onModeChange: (mode: RibbonMode) => void;
   hasActiveSessions: boolean;
+  onOpenSettings: () => void;
 }
 
 const ALL_MODES: { mode: RibbonMode; icon: string; title: string }[] = [
-  { mode: "browse",      icon: "🌲", title: "节点树" },
+  { mode: "browse", icon: "🌲", title: "节点浏览" },
   { mode: "connections", icon: "🔌", title: "连接管理" },
-  { mode: "log",         icon: "📋", title: "操作日志" },
+  { mode: "log", icon: "📋", title: "操作日志" },
 ];
 
-export function Ribbon({ mode, onModeChange, hasActiveSessions }: RibbonProps) {
+export function Ribbon({ mode, onModeChange, hasActiveSessions, onOpenSettings }: RibbonProps) {
   const visibleModes = ALL_MODES.filter(
-    (m) => m.mode === "connections" || hasActiveSessions
+    (current) => current.mode === "connections" || hasActiveSessions
   );
+
   return (
     <nav className="ribbon">
-      <div className="ribbon-logo">🌿</div>
-      {visibleModes.map(({ mode: m, icon, title }) => (
+      <div className="ribbon-logo">🐾</div>
+      {visibleModes.map(({ mode: currentMode, icon, title }) => (
         <button
-          key={m}
-          className={`ribbon-btn${mode === m ? " active" : ""}`}
+          key={currentMode}
+          className={`ribbon-btn${mode === currentMode ? " active" : ""}`}
           title={title}
-          onClick={() => onModeChange(m)}
+          onClick={() => onModeChange(currentMode)}
         >
           {icon}
         </button>
       ))}
       <div className="ribbon-spacer" />
-      <button className="ribbon-btn" title="设置">⚙️</button>
+      <button className="ribbon-btn" title="设置" onClick={onOpenSettings}>
+        ⚙️
+      </button>
     </nav>
   );
 }

@@ -5,11 +5,19 @@ interface NodeHeaderProps {
   node: NodeDetails;
   isEditing: boolean;
   isDirty: boolean;
+  isReadOnly: boolean;
   onEnterEdit: () => void;
   onExitEdit: () => void;
 }
 
-export function NodeHeader({ node, isEditing, isDirty, onEnterEdit, onExitEdit }: NodeHeaderProps) {
+export function NodeHeader({
+  node,
+  isEditing,
+  isDirty,
+  isReadOnly,
+  onEnterEdit,
+  onExitEdit,
+}: NodeHeaderProps) {
   const [showCautiousWarning, setShowCautiousWarning] = useState(false);
 
   const canToggleEdit = node.editable || node.dataKind === "cautious";
@@ -19,6 +27,7 @@ export function NodeHeader({ node, isEditing, isDirty, onEnterEdit, onExitEdit }
       onExitEdit();
       return;
     }
+    if (isReadOnly) return;
     if (node.dataKind === "cautious") {
       setShowCautiousWarning(true);
       return;
@@ -51,8 +60,10 @@ export function NodeHeader({ node, isEditing, isDirty, onEnterEdit, onExitEdit }
             type="button"
             className={`edit-toggle${isEditing ? " edit-toggle--active" : ""}`}
             onClick={handleToggle}
+            disabled={isReadOnly}
             aria-label={isEditing ? "退出编辑" : "开启编辑"}
             aria-pressed={isEditing}
+            title={isReadOnly ? "当前为只读模式" : undefined}
           >
             {isEditing ? "编辑中" : "开启编辑"}
           </button>
@@ -71,11 +82,15 @@ export function NodeHeader({ node, isEditing, isDirty, onEnterEdit, onExitEdit }
           >
             <p className="dialog-title" id="cautious-warning-title">注意</p>
             <div className="dialog-body">
-              <p>此节点内容可能改变原始格式，继续编辑后保存将以所见内容为准。</p>
+              <p>此节点内容可能改变原始格式，继续编辑并保存后会以当前内容为准。</p>
             </div>
             <div className="dialog-actions">
-              <button type="button" className="btn" onClick={() => setShowCautiousWarning(false)}>取消</button>
-              <button type="button" className="btn btn-primary" onClick={confirmCautious}>继续编辑</button>
+              <button type="button" className="btn" onClick={() => setShowCautiousWarning(false)}>
+                取消
+              </button>
+              <button type="button" className="btn btn-primary" onClick={confirmCautious}>
+                继续编辑
+              </button>
             </div>
           </div>
         </div>

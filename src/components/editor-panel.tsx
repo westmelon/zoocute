@@ -45,6 +45,7 @@ interface EditorPanelProps {
   draft: string | undefined;
   saveError: string | null;
   isEditing: boolean;
+  isReadOnly: boolean;
   onEnterEdit: () => void;
   onExitEdit: () => void;
   onDraftChange: (value: string) => void;
@@ -56,6 +57,7 @@ interface EditorPanelProps {
   onCancelPendingNav?: () => void;
   connectionId: string;
   nodePath: string;
+  pluginRefreshToken?: number;
   onListParserPlugins: () => Promise<ParserPlugin[]>;
   onRunParserPlugin: (
     connectionId: string,
@@ -70,6 +72,7 @@ export function EditorPanel({
   draft,
   saveError,
   isEditing,
+  isReadOnly,
   onEnterEdit,
   onExitEdit,
   onDraftChange,
@@ -81,6 +84,7 @@ export function EditorPanel({
   onCancelPendingNav,
   connectionId,
   nodePath,
+  pluginRefreshToken = 0,
   onListParserPlugins,
   onRunParserPlugin,
   onPluginError,
@@ -129,7 +133,7 @@ export function EditorPanel({
     return () => {
       cancelled = true;
     };
-  }, [nodePath, onListParserPlugins]);
+  }, [nodePath, onListParserPlugins, pluginRefreshToken]);
 
   const currentValue = draft ?? node.value;
   const isDirty = draft !== undefined && draft !== node.value;
@@ -224,6 +228,7 @@ export function EditorPanel({
         node={node}
         isEditing={isEditing}
         isDirty={isDirty}
+        isReadOnly={isReadOnly}
         onEnterEdit={onEnterEdit}
         onExitEdit={handleDiscard}
       />

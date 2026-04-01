@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { injectTheme } from "./app-bootstrap";
+import { applyThemePreference, injectTheme } from "./app-bootstrap";
 
 describe("theme tokens", () => {
   beforeEach(() => {
@@ -26,5 +26,24 @@ describe("theme tokens", () => {
     injectTheme();
     const attr = document.documentElement.getAttribute("data-theme");
     expect(["light", "dark"]).toContain(attr);
+  });
+
+  it("applyThemePreference resolves system to the current OS preference", () => {
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as never;
+
+    applyThemePreference("system");
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
+  it("injectTheme reads the unified settings theme before legacy fallback", () => {
+    localStorage.setItem(
+      "zoocute:settings",
+      JSON.stringify({ theme: "light", writeMode: "readonly", pluginDirectory: null })
+    );
+
+    injectTheme();
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });
 });

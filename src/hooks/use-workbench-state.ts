@@ -235,7 +235,7 @@ function shouldReplaceSnapshot(existing: TreeSnapshot | undefined, next: TreeSna
   return false;
 }
 
-export function useWorkbenchState() {
+export function useWorkbenchState(isReadOnly = false) {
   const [ribbonMode, setRibbonMode] = useState<RibbonMode>("connections");
   const {
     savedConnections, setSavedConnections,
@@ -770,6 +770,10 @@ export function useWorkbenchState() {
 
   async function handleSave(path: string, value: string) {
     if (!activeTabId) return;
+    if (isReadOnly) {
+      setSaveError("当前为只读模式，禁止新增、修改、删除节点。");
+      return;
+    }
     setSaveError(null);
     try {
       await saveNode(activeTabId, path, value);
@@ -794,6 +798,10 @@ export function useWorkbenchState() {
 
   async function createNode(parentPath: string, name: string, data: string) {
     if (!activeTabId) return;
+    if (isReadOnly) {
+      setConnectionError("当前为只读模式，禁止新增、修改、删除节点。");
+      return;
+    }
     const fullPath = parentPath === "/" ? `/${name}` : `${parentPath}/${name}`;
     try {
       await createNodeCmd(activeTabId, fullPath, data);
@@ -805,6 +813,10 @@ export function useWorkbenchState() {
 
   async function deleteNodeFn(path: string, recursive: boolean) {
     if (!activeTabId) return;
+    if (isReadOnly) {
+      setConnectionError("当前为只读模式，禁止新增、修改、删除节点。");
+      return;
+    }
     try {
       await deleteNodeCmd(activeTabId, path, recursive);
       nodeSearch.removeSubtree(activeTabId, path);

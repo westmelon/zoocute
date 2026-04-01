@@ -1,6 +1,7 @@
 import "./styles/app.css";
 import "overlayscrollbars/overlayscrollbars.css";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { applyThemePreference } from "./app-bootstrap";
 import { usePanelResize } from "./hooks/use-panel-resize";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
 import { Ribbon } from "./components/ribbon";
@@ -10,10 +11,29 @@ import { EditorPanel } from "./components/editor-panel";
 import { TreeContextMenu } from "./components/tree-context-menu";
 import { ServerTabs } from "./components/server-tabs";
 import { LogFilterPane, LogListPane } from "./components/log-pane";
+import { SettingsPanel } from "./components/settings-panel";
 import { useLogState } from "./hooks/use-log-state";
-import { listParserPlugins, runParserPlugin } from "./lib/commands";
+import {
+  choosePluginDirectory,
+  getAppSettings,
+  getEffectivePluginDirectory,
+  listParserPlugins,
+  openPluginDirectory,
+  resetPluginDirectory,
+  runParserPlugin,
+  setThemePreference,
+  setWriteMode,
+} from "./lib/commands";
+import { loadAppSettings, saveAppSettings } from "./lib/settings";
+import type { AppSettings, ThemePreference, WriteMode } from "./lib/types";
 
 export default function App() {
+  const [settings, setSettings] = useState<AppSettings>(loadAppSettings);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [effectivePluginDirectory, setEffectivePluginDirectory] = useState("");
+  const [pluginRefreshToken, setPluginRefreshToken] = useState(0);
+  const isReadOnly = settings.writeMode === "readonly";
+
   const {
     ribbonMode, setRibbonMode,
     hasActiveSessions,
@@ -40,24 +60,100 @@ export default function App() {
     savedConnections, setSavedConnections,
     selectedConnectionId, setSelectedConnectionId,
     searchQuery, setSearchQuery, searchResults, searchMode, locate, isIndexing,
-  } = useWorkbenchState();
+  } = useWorkbenchState(isReadOnly);
 
   const { width: sidebarWidth, onMouseDown: onResizeMouseDown } = usePanelResize(
     220, "zoocute:sidebar-width"
   );
 
   const logState = useLogState(ribbonMode === "log");
-
   const draft = activePath ? drafts[activePath] : undefined;
-
   const selectedConn =
-    savedConnections.find((c) => c.id === selectedConnectionId) ?? savedConnections[0];
+    savedConnections.find((connection) => connection.id === selectedConnectionId) ?? savedConnections[0];
 
   const [contextMenu, setContextMenu] = useState<{
-    path: string; x: number; y: number; hasChildren: boolean;
+    path: string;
+    x: number;
+    y: number;
+    hasChildren: boolean;
   } | null>(null);
 
   const showTabs = ribbonMode === "browse" && hasActiveSessions;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void getAppSettings()
+      .then((next) => {
+        if (cancelled) return;
+        setSettings(next);
+        saveAppSettings(next);
+        applyThemePreference(next.theme);
+      })
+      .catch(() => undefined);
+
+    void getEffectivePluginDirectory()
+      .then((path) => {
+        if (!cancelled) setEffectivePluginDirectory(path);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function syncSettings(next: AppSettings) {
+    setSettings(next);
+    saveAppSettings(next);
+    applyThemePreference(next.theme);
+    try {
+      const path = await getEffectivePluginDirectory();
+      setEffectivePluginDirectory(path);
+    } catch {
+      setEffectivePluginDirectory(next.pluginDirectory ?? "");
+    }
+  }
+
+  async function handleThemeChange(theme: ThemePreference) {
+    const next = await setThemePreference(theme).catch(() => ({
+      ...settings,
+      theme,
+    }));
+    await syncSettings(next);
+  }
+
+  async function handleWriteModeChange(writeMode: WriteMode) {
+    const next = await setWriteMode(writeMode).catch(() => ({
+      ...settings,
+      writeMode,
+    }));
+    await syncSettings(next);
+  }
+
+  async function handleChoosePluginDirectory() {
+    const next = await choosePluginDirectory().catch(() => null);
+    if (!next) return;
+    await syncSettings(next);
+    setPluginRefreshToken((current) => current + 1);
+  }
+
+  async function handleResetPluginDirectory() {
+    const next = await resetPluginDirectory().catch(() => ({
+      ...settings,
+      pluginDirectory: null,
+    }));
+    await syncSettings(next);
+    setPluginRefreshToken((current) => current + 1);
+  }
+
+  async function handleOpenPluginDirectory() {
+    try {
+      await openPluginDirectory();
+    } catch (error) {
+      showConnectionError(error instanceof Error ? error.message : "打开插件目录失败");
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -65,6 +161,7 @@ export default function App() {
         mode={ribbonMode}
         onModeChange={setRibbonMode}
         hasActiveSessions={hasActiveSessions}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
       {connectionError && (
         <div className="error-toast">{connectionError}</div>
@@ -90,13 +187,18 @@ export default function App() {
             searchMode={searchMode}
             onLocate={locate}
             isIndexing={isIndexing}
-            onContextMenu={(path, e) => {
+            onContextMenu={(path, event) => {
               const node = treeNodes
-                .flatMap(function flatten(n): typeof treeNodes {
-                  return [n, ...(n.children ?? []).flatMap(flatten)];
+                .flatMap(function flatten(current): typeof treeNodes {
+                  return [current, ...(current.children ?? []).flatMap(flatten)];
                 })
-                .find((n) => n.path === path);
-              setContextMenu({ path, x: e.clientX, y: e.clientY, hasChildren: !!(node?.hasChildren) });
+                .find((current) => current.path === path);
+              setContextMenu({
+                path,
+                x: event.clientX,
+                y: event.clientY,
+                hasChildren: !!node?.hasChildren,
+              });
             }}
           />
         )}
@@ -109,28 +211,28 @@ export default function App() {
             pendingConnectionId={pendingConnectionId}
             onSelect={setSelectedConnectionId}
             onNew={() => {
-              const newConn = {
+              const newConnection = {
                 id: Date.now().toString(),
                 name: "新连接",
                 connectionString: "",
                 timeoutMs: 5000,
               };
-              setSavedConnections((prev) => [...prev, newConn]);
-              setSelectedConnectionId(newConn.id);
+              setSavedConnections((current) => [...current, newConnection]);
+              setSelectedConnectionId(newConnection.id);
             }}
-            onConnect={(c) =>
+            onConnect={(connection) =>
               submitConnection({
-                connectionString: c.connectionString,
-                username: c.username ?? "",
-                password: c.password ?? "",
-                connectionId: c.id,
+                connectionString: connection.connectionString,
+                username: connection.username ?? "",
+                password: connection.password ?? "",
+                connectionId: connection.id,
               })
             }
             onDisconnect={disconnectSession}
             onDelete={(id) => {
-              setSavedConnections((prev) => prev.filter((x) => x.id !== id));
+              setSavedConnections((current) => current.filter((connection) => connection.id !== id));
               setSelectedConnectionId(
-                savedConnections.find((x) => x.id !== id)?.id ?? null
+                savedConnections.find((connection) => connection.id !== id)?.id ?? null
               );
             }}
           />
@@ -142,7 +244,10 @@ export default function App() {
             loading={logState.loading}
             onRefresh={logState.refresh}
             onClear={logState.clear}
-            connections={savedConnections.map((c) => ({ id: c.id, name: c.name }))}
+            connections={savedConnections.map((connection) => ({
+              id: connection.id,
+              name: connection.name,
+            }))}
           />
         )}
       </div>
@@ -166,10 +271,11 @@ export default function App() {
             draft={draft}
             saveError={saveError}
             isEditing={isEditing}
+            isReadOnly={isReadOnly}
             onEnterEdit={() => activePath && enterEditMode(activePath)}
             onExitEdit={() => activePath && exitEditMode(activePath)}
-            onDraftChange={(v) => activePath && updateDraft(activePath, v)}
-            onSave={(v) => activePath && handleSave(activePath, v)}
+            onDraftChange={(value) => activePath && updateDraft(activePath, value)}
+            onSave={(value) => activePath && handleSave(activePath, value)}
             onDiscard={() => activePath && discardDraft(activePath)}
             onFetchServerValue={() => activePath ? fetchServerValue(activePath) : Promise.resolve(null)}
             pendingNavPath={pendingNavPath}
@@ -177,6 +283,7 @@ export default function App() {
             onCancelPendingNav={cancelPendingNav}
             connectionId={activeTabId ?? ""}
             nodePath={activePath ?? ""}
+            pluginRefreshToken={pluginRefreshToken}
             onListParserPlugins={listParserPlugins}
             onRunParserPlugin={runParserPlugin}
             onPluginError={showConnectionError}
@@ -192,16 +299,18 @@ export default function App() {
             connection={selectedConn}
             isConnecting={isConnecting && pendingConnectionId === selectedConn.id}
             isTesting={connectionAction === "test" && pendingConnectionId === selectedConn.id}
-            onSave={(c) => {
-              setSavedConnections((prev) => prev.map((x) => (x.id === c.id ? c : x)));
+            onSave={(connection) => {
+              setSavedConnections((current) =>
+                current.map((item) => (item.id === connection.id ? connection : item))
+              );
               showConnectionNotice("保存成功");
             }}
-            onTestConnect={(c) =>
+            onTestConnect={(connection) =>
               testConnection({
-                connectionString: c.connectionString,
-                username: c.username ?? "",
-                password: c.password ?? "",
-                connectionId: c.id,
+                connectionString: connection.connectionString,
+                username: connection.username ?? "",
+                password: connection.password ?? "",
+                connectionId: connection.id,
               })
             }
           />
@@ -223,6 +332,7 @@ export default function App() {
           x={contextMenu.x}
           y={contextMenu.y}
           hasChildren={contextMenu.hasChildren}
+          isReadOnly={isReadOnly}
           onClose={() => setContextMenu(null)}
           onCreate={(parentPath, name, data) => createNode(parentPath, name, data)}
           onDelete={(path, recursive) => deleteNode(path, recursive)}
@@ -230,6 +340,18 @@ export default function App() {
           onRefresh={(path) => ensureChildrenLoaded(path, { force: true })}
         />
       )}
+
+      <SettingsPanel
+        isOpen={isSettingsOpen}
+        settings={settings}
+        effectivePluginDirectory={effectivePluginDirectory}
+        onClose={() => setIsSettingsOpen(false)}
+        onThemeChange={(theme) => void handleThemeChange(theme)}
+        onWriteModeChange={(writeMode) => void handleWriteModeChange(writeMode)}
+        onChoosePluginDirectory={() => void handleChoosePluginDirectory()}
+        onResetPluginDirectory={() => void handleResetPluginDirectory()}
+        onOpenPluginDirectory={() => void handleOpenPluginDirectory()}
+      />
     </div>
   );
 }
