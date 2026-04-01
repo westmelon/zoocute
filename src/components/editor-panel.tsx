@@ -7,6 +7,39 @@ import { NodeContentPanel } from "./node-content-panel";
 import { DiffPanel } from "./diff-panel";
 import { NodeStat } from "./node-stat";
 
+interface PluginErrorState {
+  pluginName: string;
+  message: string;
+}
+
+function extractPluginErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  if (typeof error === "object" && error !== null) {
+    const maybeMessage = Reflect.get(error, "message");
+    if (typeof maybeMessage === "string" && maybeMessage.trim()) {
+      return maybeMessage;
+    }
+    const maybeError = Reflect.get(error, "error");
+    if (typeof maybeError === "string" && maybeError.trim()) {
+      return maybeError;
+    }
+  }
+  return "插件解析失败";
+}
+
+function summarizePluginError(message: string): string {
+  const firstLine = message
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return firstLine ?? "插件解析失败";
+}
+
 interface EditorPanelProps {
   node: NodeDetails;
   draft: string | undefined;
@@ -24,7 +57,11 @@ interface EditorPanelProps {
   connectionId: string;
   nodePath: string;
   onListParserPlugins: () => Promise<ParserPlugin[]>;
-  onRunParserPlugin: (connectionId: string, path: string, pluginId: string) => Promise<ParserPluginResult>;
+  onRunParserPlugin: (
+    connectionId: string,
+    path: string,
+    pluginId: string
+  ) => Promise<ParserPluginResult>;
   onPluginError: (message: string) => void;
 }
 
@@ -58,6 +95,8 @@ export function EditorPanel({
   const [selectedPluginId, setSelectedPluginId] = useState("");
   const [pluginResult, setPluginResult] = useState<ParserPluginResult | null>(null);
   const [isPluginParsing, setIsPluginParsing] = useState(false);
+  const [pluginError, setPluginError] = useState<PluginErrorState | null>(null);
+  const [isPluginErrorDialogOpen, setIsPluginErrorDialogOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,6 +104,8 @@ export function EditorPanel({
     setSelectedPluginId((current) => (current === "" ? current : ""));
     setPluginResult((current) => (current === null ? current : null));
     setIsPluginParsing((current) => (current === false ? current : false));
+    setPluginError((current) => (current === null ? current : null));
+    setIsPluginErrorDialogOpen((current) => (current === false ? current : false));
     setViewMode((current) => (current === "raw" ? current : "raw"));
     setShowDiff((current) => (current === false ? current : false));
 
@@ -132,6 +173,25 @@ export function EditorPanel({
     setShowDiff(false);
   }
 
+  function clearPluginError() {
+    setPluginError(null);
+    setIsPluginErrorDialogOpen(false);
+  }
+
+  function handlePluginChange(pluginId: string) {
+    setSelectedPluginId(pluginId);
+    clearPluginError();
+  }
+
+  async function handleCopyPluginError() {
+    if (!pluginError) return;
+    try {
+      await navigator.clipboard?.writeText(pluginError.message);
+    } catch {
+      // Best-effort copy only.
+    }
+  }
+
   async function handleParsePlugin() {
     if (!selectedPluginId) {
       onPluginError("请先选择插件");
@@ -139,13 +199,20 @@ export function EditorPanel({
     }
 
     setIsPluginParsing(true);
+    clearPluginError();
     try {
       const result = await onRunParserPlugin(connectionId, nodePath, selectedPluginId);
       setPluginResult(result);
+      clearPluginError();
       setViewMode("plugin");
       setShowDiff(false);
     } catch (error) {
-      onPluginError(error instanceof Error ? error.message : "插件解析失败");
+      const message = extractPluginErrorMessage(error);
+      const pluginName =
+        plugins.find((plugin) => plugin.id === selectedPluginId)?.name ?? selectedPluginId;
+      setPluginError({ pluginName, message });
+      setIsPluginErrorDialogOpen(false);
+      onPluginError(message);
     } finally {
       setIsPluginParsing(false);
     }
@@ -174,7 +241,7 @@ export function EditorPanel({
         onSave={handleSave}
         plugins={plugins}
         selectedPluginId={selectedPluginId}
-        onPluginChange={setSelectedPluginId}
+        onPluginChange={handlePluginChange}
         onParsePlugin={handleParsePlugin}
         pluginResultAvailable={pluginResult !== null}
         isPluginParsing={isPluginParsing}
@@ -198,6 +265,65 @@ export function EditorPanel({
 
       {saveError && (
         <div className="save-error">{saveError}</div>
+      )}
+
+      {pluginError && (
+        <div className="plugin-error-panel">
+          <div className="plugin-error-panel__header">
+            <div className="plugin-error-panel__meta">
+              <span className="plugin-error-panel__label">Plugin Error</span>
+              <span className="plugin-error-panel__name">{pluginError.pluginName}</span>
+            </div>
+            <div className="plugin-error-panel__actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setIsPluginErrorDialogOpen(true)}
+              >
+                查看详情
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void handleCopyPluginError()}
+              >
+                复制
+              </button>
+            </div>
+          </div>
+          <p className="plugin-error-panel__summary">
+            {summarizePluginError(pluginError.message)}
+          </p>
+        </div>
+      )}
+
+      {isPluginErrorDialogOpen && pluginError && (
+        <div className="dialog-backdrop">
+          <div
+            className="dialog plugin-error-dialog"
+            role="alertdialog"
+            aria-labelledby="plugin-error-title"
+            aria-modal="true"
+          >
+            <p className="dialog-title" id="plugin-error-title">插件错误详情</p>
+            <div className="dialog-body">
+              <p className="plugin-error-dialog__plugin">{pluginError.pluginName}</p>
+              <pre className="plugin-error-dialog__body">{pluginError.message}</pre>
+            </div>
+            <div className="dialog-actions">
+              <button type="button" className="btn" onClick={() => void handleCopyPluginError()}>
+                复制
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setIsPluginErrorDialogOpen(false)}
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showDiscardConfirm && (

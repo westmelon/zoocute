@@ -400,6 +400,82 @@ body {
   flex-shrink: 0;
 }
 
+.plugin-error-panel {
+  margin: 0 14px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 24%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger-subtle) 72%, var(--bg-subtle));
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.plugin-error-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+}
+
+.plugin-error-panel__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.plugin-error-panel__label {
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plugin-error-panel__name {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-error-panel__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.plugin-error-panel__summary {
+  margin: 0;
+  padding: 0 12px 12px;
+  word-break: break-word;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.plugin-error-dialog {
+  width: min(760px, calc(100vw - 48px));
+}
+
+.plugin-error-dialog__plugin {
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.plugin-error-dialog__body {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--bg-inset);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
 /* ─── Tree ───────────────────────────────────────────── */
 .tree-list {
   list-style: none;

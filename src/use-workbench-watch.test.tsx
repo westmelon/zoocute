@@ -90,6 +90,7 @@ const {
   }
 
   return {
+    initialTreeSnapshot,
     listChildrenMock: vi.fn(async (_connectionId: string, path: string) => {
       if (path === "/") {
         return [{ path: "/configs", name: "configs", hasChildren: true }];
