@@ -101,6 +101,35 @@ export interface SavedConnection {
   timeoutMs: number;
 }
 
+export interface PersistedConnectionsDto {
+  savedConnections: SavedConnection[];
+  selectedConnectionId: string | null;
+}
+
+export type PersistedConnectionsLoadStatusKind =
+  | "missing"
+  | "loaded"
+  | "sanitized"
+  | "quarantined"
+  | "quarantineFailed";
+
+export interface PersistedConnectionsLoadStatus {
+  kind: PersistedConnectionsLoadStatusKind;
+  message: string | null;
+}
+
+export interface LoadPersistedConnectionsResponse {
+  connections: PersistedConnectionsDto;
+  status: PersistedConnectionsLoadStatus;
+}
+
+export type RuntimeMode = "standard" | "portable";
+
+export interface RuntimeInfo {
+  mode: RuntimeMode;
+  dataRoot: string;
+}
+
 export interface WorkbenchState {
   openTabs: string[];
   activePath: string;

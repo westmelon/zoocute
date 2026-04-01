@@ -58,6 +58,16 @@ const {
 vi.mock("./lib/commands", () => ({
   connectServer: connectServerMock,
   disconnectServer: disconnectServerMock,
+  loadPersistedConnections: vi.fn(async () => ({
+    connections: {
+      savedConnections: [
+        { id: "local", name: "本地开发", connectionString: "127.0.0.1:2181", timeoutMs: 5000 },
+      ],
+      selectedConnectionId: "local",
+    },
+    status: { kind: "loaded", message: null },
+  })),
+  savePersistedConnections: vi.fn(async (payload) => payload),
   listChildren: listChildrenMock,
   getNodeDetails: getNodeDetailsMock,
   getTreeSnapshot: getTreeSnapshotMock,
@@ -90,7 +100,6 @@ const AUTH_HINT =
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  localStorage.setItem("zoocute:connections", JSON.stringify([LOCAL_CONN]));
 });
 
 describe("submitConnection", () => {
@@ -394,4 +403,3 @@ describe("getTreeSnapshot", () => {
     expect(snapshot.nodes[0].path).toBe("/ssdev");
   });
 });
-

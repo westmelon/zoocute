@@ -1,15 +1,20 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State, Wry};
 
 use crate::domain::{
-    ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
-    ParserPluginRunResultDto, TreeSnapshotDto, ZkLogEntry,
+    ConnectRequestDto, ConnectionStatusDto, LoadPersistedConnectionsResponseDto, LoadedTreeNodeDto,
+    NodeDetailsDto, ParserPluginRunResultDto, PersistedConnectionsDto,
+    PersistedConnectionsLoadStatusDto, PersistedConnectionsLoadStatusKindDto, RuntimeInfoDto,
+    TreeSnapshotDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
 use crate::parser_plugins::{
@@ -19,6 +24,8 @@ use crate::parser_plugins::{
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::live::LiveAdapter;
 use crate::zk_core::mock::MockAdapter;
+
+pub use crate::domain::RuntimeMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +45,15 @@ impl Default for AppSettingsDto {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionsLoadStatus {
+    Missing,
+    Loaded,
+    Sanitized { message: String },
+    Quarantined { message: String },
+    QuarantineFailed { message: String },
+}
+
 pub struct AppState {
     pub sessions: Mutex<HashMap<String, LiveAdapter>>,
     pub mock: MockAdapter,
@@ -45,18 +61,26 @@ pub struct AppState {
     pub app_handle: Option<AppHandle<Wry>>,
     settings: Mutex<AppSettingsDto>,
     settings_path: PathBuf,
+    connections: Mutex<PersistedConnectionsDto>,
+    connections_load_status: Mutex<ConnectionsLoadStatus>,
+    connections_path: PathBuf,
     default_plugin_root: PathBuf,
+    runtime_mode: RuntimeMode,
+    data_root: PathBuf,
 }
 
 impl AppState {
-    pub fn new(log_path: PathBuf, app_handle: AppHandle<Wry>) -> Self {
-        let app_data_dir = app_handle
-            .path()
-            .app_data_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
-        let settings_path = app_data_dir.join("settings.json");
-        let default_plugin_root = app_data_dir.join("plugins");
-        let settings = load_settings_from_path(&settings_path);
+    pub fn new(
+        log_path: PathBuf,
+        app_handle: AppHandle<Wry>,
+        runtime_mode: RuntimeMode,
+        data_root: PathBuf,
+    ) -> Self {
+        let settings_path = data_root.join("settings.json");
+        let connections_path = data_root.join("connections.json");
+        let default_plugin_root = data_root.join("plugins");
+        let settings = load_settings_from_path(&settings_path, runtime_mode);
+        let (connections, connections_load_status) = load_connections_from_path(&connections_path);
         Self {
             sessions: Mutex::new(HashMap::new()),
             mock: MockAdapter::default(),
@@ -64,7 +88,12 @@ impl AppState {
             app_handle: Some(app_handle),
             settings: Mutex::new(settings),
             settings_path,
+            connections: Mutex::new(connections),
+            connections_load_status: Mutex::new(connections_load_status),
+            connections_path,
             default_plugin_root,
+            runtime_mode,
+            data_root,
         }
     }
 
@@ -77,7 +106,36 @@ impl AppState {
     }
 
     pub fn new_for_tests_with_plugin_root(log_path: PathBuf, plugin_root: PathBuf) -> Self {
-        Self::new_for_tests_with_paths(log_path, PathBuf::from("target/test-settings.json"), plugin_root)
+        Self::new_for_tests_with_paths(
+            log_path,
+            PathBuf::from("target/test-settings.json"),
+            plugin_root,
+        )
+    }
+
+    pub fn new_for_tests_with_runtime_mode(
+        log_path: PathBuf,
+        runtime_mode: RuntimeMode,
+        data_root: PathBuf,
+    ) -> Self {
+        let settings_path = data_root.join("settings.json");
+        let connections_path = data_root.join("connections.json");
+        let default_plugin_root = data_root.join("plugins");
+        let (connections, connections_load_status) = load_connections_from_path(&connections_path);
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            mock: MockAdapter::default(),
+            log_store: Arc::new(ZkLogStore::new(log_path)),
+            app_handle: None,
+            settings: Mutex::new(load_settings_from_path(&settings_path, runtime_mode)),
+            settings_path,
+            connections: Mutex::new(connections),
+            connections_load_status: Mutex::new(connections_load_status),
+            connections_path,
+            default_plugin_root,
+            runtime_mode,
+            data_root,
+        }
     }
 
     pub fn new_for_tests_with_paths(
@@ -85,24 +143,42 @@ impl AppState {
         settings_path: PathBuf,
         default_plugin_root: PathBuf,
     ) -> Self {
+        let data_root = settings_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let connections_path = data_root.join("connections.json");
+        let (connections, connections_load_status) = load_connections_from_path(&connections_path);
         Self {
             sessions: Mutex::new(HashMap::new()),
             mock: MockAdapter::default(),
             log_store: Arc::new(ZkLogStore::new(log_path)),
             app_handle: None,
-            settings: Mutex::new(load_settings_from_path(&settings_path)),
+            settings: Mutex::new(load_settings_from_path(
+                &settings_path,
+                RuntimeMode::Standard,
+            )),
             settings_path,
+            connections: Mutex::new(connections),
+            connections_load_status: Mutex::new(connections_load_status),
+            connections_path,
             default_plugin_root,
+            runtime_mode: RuntimeMode::Standard,
+            data_root,
         }
     }
 
     pub fn plugin_root(&self) -> PathBuf {
+        if self.runtime_mode == RuntimeMode::Portable {
+            return self.default_plugin_root.clone();
+        }
         let settings = self
             .settings
             .lock()
             .map_err(|_| "failed to acquire settings lock".to_string())
             .ok();
-        if let Some(plugin_directory) = settings.and_then(|settings| settings.plugin_directory.clone())
+        if let Some(plugin_directory) =
+            settings.and_then(|settings| settings.plugin_directory.clone())
         {
             return PathBuf::from(plugin_directory);
         }
@@ -110,10 +186,46 @@ impl AppState {
     }
 
     pub fn get_settings(&self) -> AppSettingsDto {
-        self.settings
+        let mut settings = self
+            .settings
             .lock()
             .map(|settings| settings.clone())
+            .unwrap_or_default();
+        if self.runtime_mode == RuntimeMode::Portable {
+            settings.plugin_directory = None;
+        }
+        settings
+    }
+
+    pub fn get_persisted_connections(&self) -> PersistedConnectionsDto {
+        self.connections
+            .lock()
+            .map(|connections| connections.clone())
             .unwrap_or_default()
+    }
+
+    pub fn load_persisted_connections_response(&self) -> LoadPersistedConnectionsResponseDto {
+        LoadPersistedConnectionsResponseDto {
+            connections: self.get_persisted_connections(),
+            status: map_connections_load_status(self.connections_load_status()),
+        }
+    }
+
+    pub fn connections_load_status(&self) -> ConnectionsLoadStatus {
+        self.connections_load_status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or(ConnectionsLoadStatus::QuarantineFailed {
+                message: "failed to acquire connections load status lock".to_string(),
+            })
+    }
+
+    pub fn runtime_mode(&self) -> RuntimeMode {
+        self.runtime_mode
+    }
+
+    pub fn data_root(&self) -> PathBuf {
+        self.data_root.clone()
     }
 
     pub fn set_write_mode(&self, write_mode: String) -> Result<AppSettingsDto, String> {
@@ -138,6 +250,9 @@ impl AppState {
         &self,
         plugin_directory: Option<String>,
     ) -> Result<AppSettingsDto, String> {
+        if self.runtime_mode == RuntimeMode::Portable && plugin_directory.is_some() {
+            return Err("便携版插件目录固定为程序目录下的 zoo_data/plugins".to_string());
+        }
         self.update_settings(|settings| {
             settings.plugin_directory = plugin_directory.and_then(|value| {
                 let trimmed = value.trim().to_string();
@@ -165,6 +280,25 @@ impl AppState {
         self.default_plugin_root.clone()
     }
 
+    pub fn save_persisted_connections(
+        &self,
+        connections: PersistedConnectionsDto,
+    ) -> Result<PersistedConnectionsDto, String> {
+        let connections = validate_connections_for_save(&connections)?;
+        let mut stored = self
+            .connections
+            .lock()
+            .map_err(|_| "failed to acquire connections lock".to_string())?;
+        let mut load_status = self
+            .connections_load_status
+            .lock()
+            .map_err(|_| "failed to acquire connections load status lock".to_string())?;
+        persist_connections_to_path(&self.connections_path, &connections)?;
+        *stored = connections.clone();
+        *load_status = ConnectionsLoadStatus::Loaded;
+        Ok(connections)
+    }
+
     fn update_settings<F>(&self, update: F) -> Result<AppSettingsDto, String>
     where
         F: FnOnce(&mut AppSettingsDto),
@@ -179,11 +313,54 @@ impl AppState {
     }
 }
 
-fn load_settings_from_path(path: &PathBuf) -> AppSettingsDto {
+pub fn resolve_runtime_mode_and_data_root(app_handle: &AppHandle<Wry>) -> (RuntimeMode, PathBuf) {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let executable_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    resolve_runtime_mode_and_data_root_from_paths(&executable_path, app_data_dir)
+}
+
+pub fn resolve_runtime_mode_and_data_root_from_paths(
+    executable_path: &Path,
+    app_data_dir: PathBuf,
+) -> (RuntimeMode, PathBuf) {
+    if is_portable_executable(executable_path) {
+        let exe_dir = executable_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        (RuntimeMode::Portable, exe_dir.join("zoo_data"))
+    } else {
+        (RuntimeMode::Standard, app_data_dir)
+    }
+}
+
+fn is_portable_executable(executable_path: &Path) -> bool {
+    executable_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("ZooCutePortable"))
+        .unwrap_or(false)
+}
+
+fn load_settings_from_path(path: &PathBuf, runtime_mode: RuntimeMode) -> AppSettingsDto {
     fs::read_to_string(path)
         .ok()
         .and_then(|raw| serde_json::from_str::<AppSettingsDto>(&raw).ok())
+        .map(|settings| sanitize_settings_for_runtime(settings, runtime_mode))
         .unwrap_or_default()
+}
+
+fn sanitize_settings_for_runtime(
+    mut settings: AppSettingsDto,
+    runtime_mode: RuntimeMode,
+) -> AppSettingsDto {
+    if runtime_mode == RuntimeMode::Portable {
+        settings.plugin_directory = None;
+    }
+    settings
 }
 
 fn persist_settings_to_path(path: &PathBuf, settings: &AppSettingsDto) -> Result<(), String> {
@@ -192,6 +369,293 @@ fn persist_settings_to_path(path: &PathBuf, settings: &AppSettingsDto) -> Result
     }
     let raw = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
     fs::write(path, raw).map_err(|error| error.to_string())
+}
+
+fn load_connections_from_path(path: &PathBuf) -> (PersistedConnectionsDto, ConnectionsLoadStatus) {
+    load_connections_from_path_with_timestamp(path, unix_timestamp_millis())
+}
+
+pub fn load_connections_from_path_with_timestamp(
+    path: &Path,
+    timestamp_millis: u128,
+) -> (PersistedConnectionsDto, ConnectionsLoadStatus) {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (
+                PersistedConnectionsDto::default(),
+                ConnectionsLoadStatus::Missing,
+            );
+        }
+        Err(error) => {
+            return quarantine_invalid_connections_path(
+                path,
+                timestamp_millis,
+                format!("failed to read {}: {error}", path.display()),
+            );
+        }
+    };
+
+    match serde_json::from_str::<PersistedConnectionsDto>(&raw) {
+        Ok(connections) => {
+            let (connections, was_sanitized, message) = sanitize_loaded_connections(connections);
+            let status = if was_sanitized {
+                ConnectionsLoadStatus::Sanitized { message }
+            } else {
+                ConnectionsLoadStatus::Loaded
+            };
+            (connections, status)
+        }
+        Err(error) => quarantine_invalid_connections_path(
+            path,
+            timestamp_millis,
+            format!("failed to parse {}: {error}", path.display()),
+        ),
+    }
+}
+
+fn persist_connections_to_path(
+    path: &PathBuf,
+    connections: &PersistedConnectionsDto,
+) -> Result<(), String> {
+    let connections = validate_connections_for_save(connections)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let raw = serde_json::to_vec_pretty(&connections).map_err(|error| error.to_string())?;
+    let temp_path = temp_connections_path(path);
+    write_connections_temp_file(&temp_path, &raw).map_err(|error| error.to_string())?;
+    replace_file_atomic(&temp_path, path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        error.to_string()
+    })?;
+    Ok(())
+}
+
+fn sanitize_loaded_connections(
+    connections: PersistedConnectionsDto,
+) -> (PersistedConnectionsDto, bool, String) {
+    let mut seen = HashSet::new();
+    let mut removed_empty = 0usize;
+    let mut removed_duplicate = 0usize;
+    let saved_connections = connections
+        .saved_connections
+        .into_iter()
+        .filter_map(|mut connection| {
+            connection.id = connection.id.trim().to_string();
+            if connection.id.is_empty() {
+                removed_empty += 1;
+                return None;
+            }
+            if !seen.insert(connection.id.clone()) {
+                removed_duplicate += 1;
+                return None;
+            }
+            Some(connection)
+        })
+        .collect::<Vec<_>>();
+
+    let original_selected = connections.selected_connection_id.clone();
+    let selected_connection_id = connections
+        .selected_connection_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| {
+            !id.is_empty()
+                && saved_connections
+                    .iter()
+                    .any(|connection| connection.id == *id)
+        });
+    let selected_repaired = original_selected != selected_connection_id;
+    let was_sanitized = removed_empty > 0 || removed_duplicate > 0 || selected_repaired;
+    let message = format!(
+        "invalid persisted connections repaired: removed_empty_ids={removed_empty}, removed_duplicate_ids={removed_duplicate}, repaired_selected_connection_id={selected_repaired}"
+    );
+
+    (
+        PersistedConnectionsDto {
+            saved_connections,
+            selected_connection_id,
+        },
+        was_sanitized,
+        message,
+    )
+}
+
+fn validate_connections_for_save(
+    connections: &PersistedConnectionsDto,
+) -> Result<PersistedConnectionsDto, String> {
+    let mut seen = HashSet::new();
+    let mut saved_connections = Vec::with_capacity(connections.saved_connections.len());
+
+    for connection in &connections.saved_connections {
+        let mut connection = connection.clone();
+        connection.id = connection.id.trim().to_string();
+        if connection.id.is_empty() {
+            return Err("empty connection id is not allowed".to_string());
+        }
+        if !seen.insert(connection.id.clone()) {
+            return Err(format!(
+                "duplicate connection id is not allowed: {}",
+                connection.id
+            ));
+        }
+        saved_connections.push(connection);
+    }
+
+    let selected_connection_id = connections
+        .selected_connection_id
+        .as_ref()
+        .map(|id| id.trim().to_string())
+        .filter(|id| {
+            !id.is_empty()
+                && saved_connections
+                    .iter()
+                    .any(|connection| connection.id == *id)
+        });
+
+    Ok(PersistedConnectionsDto {
+        saved_connections,
+        selected_connection_id,
+    })
+}
+
+fn quarantine_invalid_connections_path(
+    path: &Path,
+    timestamp_millis: u128,
+    reason: String,
+) -> (PersistedConnectionsDto, ConnectionsLoadStatus) {
+    match rename_corrupt_connections_file(path, timestamp_millis) {
+        Ok(quarantine_path) => (
+            PersistedConnectionsDto::default(),
+            ConnectionsLoadStatus::Quarantined {
+                message: format!("{reason}; quarantined at {}", quarantine_path.display()),
+            },
+        ),
+        Err(error) => (
+            PersistedConnectionsDto::default(),
+            ConnectionsLoadStatus::QuarantineFailed {
+                message: format!("{reason}; failed to quarantine {}: {error}", path.display()),
+            },
+        ),
+    }
+}
+
+fn rename_corrupt_connections_file(
+    path: &Path,
+    timestamp_millis: u128,
+) -> std::io::Result<PathBuf> {
+    if !path.exists() {
+        return Ok(corrupt_connections_path(path, timestamp_millis));
+    }
+    let corrupt_path = corrupt_connections_path(path, timestamp_millis);
+    fs::rename(path, &corrupt_path)?;
+    Ok(corrupt_path)
+}
+
+fn corrupt_connections_path(path: &Path, timestamp_millis: u128) -> PathBuf {
+    path.with_file_name(format!(
+        "{}.corrupt-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("connections.json"),
+        timestamp_millis
+    ))
+}
+
+fn temp_connections_path(path: &Path) -> PathBuf {
+    path.with_file_name(format!(
+        "{}.tmp-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("connections.json"),
+        unix_timestamp_millis()
+    ))
+}
+
+fn write_connections_temp_file(path: &Path, raw: &[u8]) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    use std::io::Write;
+    file.write_all(raw)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn replace_file_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+
+    unsafe extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+    let source_wide = OsStr::new(source)
+        .encode_wide()
+        .chain(once(0))
+        .collect::<Vec<u16>>();
+    let destination_wide = OsStr::new(destination)
+        .encode_wide()
+        .chain(once(0))
+        .collect::<Vec<u16>>();
+
+    let result = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_file_atomic(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+fn unix_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn map_connections_load_status(status: ConnectionsLoadStatus) -> PersistedConnectionsLoadStatusDto {
+    match status {
+        ConnectionsLoadStatus::Missing => PersistedConnectionsLoadStatusDto {
+            kind: PersistedConnectionsLoadStatusKindDto::Missing,
+            message: None,
+        },
+        ConnectionsLoadStatus::Loaded => PersistedConnectionsLoadStatusDto {
+            kind: PersistedConnectionsLoadStatusKindDto::Loaded,
+            message: None,
+        },
+        ConnectionsLoadStatus::Sanitized { message } => PersistedConnectionsLoadStatusDto {
+            kind: PersistedConnectionsLoadStatusKindDto::Sanitized,
+            message: Some(message),
+        },
+        ConnectionsLoadStatus::Quarantined { message } => PersistedConnectionsLoadStatusDto {
+            kind: PersistedConnectionsLoadStatusKindDto::Quarantined,
+            message: Some(message),
+        },
+        ConnectionsLoadStatus::QuarantineFailed { message } => PersistedConnectionsLoadStatusDto {
+            kind: PersistedConnectionsLoadStatusKindDto::QuarantineFailed,
+            message: Some(message),
+        },
+    }
 }
 
 fn open_path_in_file_manager(path: &PathBuf) -> Result<(), String> {
@@ -421,6 +885,29 @@ pub fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettingsDto, St
 }
 
 #[tauri::command]
+pub fn get_runtime_info(state: State<'_, AppState>) -> Result<RuntimeInfoDto, String> {
+    Ok(RuntimeInfoDto {
+        mode: state.runtime_mode(),
+        data_root: state.data_root().display().to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn load_persisted_connections(
+    state: State<'_, AppState>,
+) -> Result<LoadPersistedConnectionsResponseDto, String> {
+    Ok(state.load_persisted_connections_response())
+}
+
+#[tauri::command]
+pub fn save_persisted_connections(
+    connections: PersistedConnectionsDto,
+    state: State<'_, AppState>,
+) -> Result<PersistedConnectionsDto, String> {
+    state.save_persisted_connections(connections)
+}
+
+#[tauri::command]
 pub fn set_theme_preference(
     theme: String,
     state: State<'_, AppState>,
@@ -437,10 +924,17 @@ pub fn set_write_mode(
 }
 
 #[tauri::command]
-pub fn choose_plugin_directory(state: State<'_, AppState>) -> Result<Option<AppSettingsDto>, String> {
+pub fn choose_plugin_directory(
+    state: State<'_, AppState>,
+) -> Result<Option<AppSettingsDto>, String> {
+    if state.runtime_mode() == RuntimeMode::Portable {
+        return Err("便携版插件目录固定为程序目录下的 zoo_data/plugins".to_string());
+    }
     let selected = rfd::FileDialog::new().pick_folder();
     match selected {
-        Some(path) => state.set_plugin_directory(Some(path.display().to_string())).map(Some),
+        Some(path) => state
+            .set_plugin_directory(Some(path.display().to_string()))
+            .map(Some),
         None => Ok(None),
     }
 }
@@ -626,8 +1120,7 @@ mod tests {
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0].id, "valid");
         assert!(logs.iter().any(|entry| {
-            entry.operation == "parser_plugin_discovery_warning"
-                && entry.message.contains("id")
+            entry.operation == "parser_plugin_discovery_warning" && entry.message.contains("id")
         }));
     }
 

@@ -45,13 +45,18 @@ fn json_display_label_is_human_readable() {
 #[test]
 fn text_display_label_is_human_readable() {
     let result = interpret_data(b"plain text content");
-    assert!(result.display_mode_label.contains("文本") || result.display_mode_label.contains("Text"));
+    assert!(
+        result.display_mode_label.contains("文本") || result.display_mode_label.contains("Text")
+    );
 }
 
 #[test]
 fn binary_display_label_is_human_readable() {
     let result = interpret_data(&[0xDE, 0xAD, 0xBE, 0xEF]);
-    assert!(result.display_mode_label.contains("二进制") || result.display_mode_label.contains("Binary"));
+    assert!(
+        result.display_mode_label.contains("二进制")
+            || result.display_mode_label.contains("Binary")
+    );
 }
 
 #[test]

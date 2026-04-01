@@ -1,8 +1,9 @@
-import type { AppSettings, ThemePreference, WriteMode } from "../lib/types";
+import type { AppSettings, RuntimeMode, ThemePreference, WriteMode } from "../lib/types";
 
 interface SettingsPanelProps {
   isOpen: boolean;
   settings: AppSettings;
+  runtimeMode: RuntimeMode;
   effectivePluginDirectory: string;
   onClose: () => void;
   onThemeChange: (theme: ThemePreference) => void;
@@ -26,6 +27,7 @@ const WRITE_MODES: { value: WriteMode; label: string }[] = [
 export function SettingsPanel({
   isOpen,
   settings,
+  runtimeMode,
   effectivePluginDirectory,
   onClose,
   onThemeChange,
@@ -35,6 +37,8 @@ export function SettingsPanel({
   onOpenPluginDirectory,
 }: SettingsPanelProps) {
   if (!isOpen) return null;
+
+  const isPortable = runtimeMode === "portable";
 
   return (
     <div className="settings-panel-backdrop" onClick={onClose}>
@@ -49,6 +53,7 @@ export function SettingsPanel({
           <div>
             <p className="settings-panel__eyebrow">Settings</p>
             <h2 className="settings-panel__title" id="settings-panel-title">设置</h2>
+            {isPortable && <p className="settings-section__hint">Portable Mode</p>}
           </div>
           <button type="button" className="btn" onClick={onClose}>
             关闭
@@ -92,15 +97,23 @@ export function SettingsPanel({
 
         <section className="settings-section">
           <h3>插件</h3>
-          <p className="settings-section__hint">当前插件目录</p>
+          <p className="settings-section__hint">
+            {isPortable
+              ? "便携版插件目录固定为程序目录下的 zoo_data/plugins"
+              : "当前插件目录"}
+          </p>
           <code className="settings-path">{effectivePluginDirectory || "未获取到目录"}</code>
           <div className="settings-actions">
-            <button type="button" className="btn" onClick={onChoosePluginDirectory}>
-              选择目录
-            </button>
-            <button type="button" className="btn" onClick={onResetPluginDirectory}>
-              恢复默认
-            </button>
+            {!isPortable && (
+              <button type="button" className="btn" onClick={onChoosePluginDirectory}>
+                选择目录
+              </button>
+            )}
+            {!isPortable && (
+              <button type="button" className="btn" onClick={onResetPluginDirectory}>
+                恢复默认
+              </button>
+            )}
             <button type="button" className="btn btn-primary" onClick={onOpenPluginDirectory}>
               打开插件目录
             </button>

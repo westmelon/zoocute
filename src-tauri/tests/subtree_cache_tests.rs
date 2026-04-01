@@ -1,5 +1,5 @@
-use zoocute_lib::zk_core::cache::{ConnectionCache, NodeRecord};
 use zoocute_lib::domain::{CachedTreeNodeDto, TreeSnapshotDto};
+use zoocute_lib::zk_core::cache::{ConnectionCache, NodeRecord};
 
 #[test]
 fn inserts_root_children_and_tracks_parent_relationships() {
@@ -133,9 +133,12 @@ fn replace_all_can_recover_from_stale_cache_state() {
         vec![NodeRecord::new("/old", "old", Some("/".into()), false)],
     );
 
-    cache.replace_all(vec![
-        NodeRecord::new("/ssdev", "ssdev", Some("/".into()), true),
-    ]);
+    cache.replace_all(vec![NodeRecord::new(
+        "/ssdev",
+        "ssdev",
+        Some("/".into()),
+        true,
+    )]);
     cache.mark_live();
 
     assert!(cache.node("/old").is_none());
@@ -179,8 +182,13 @@ fn reconciling_descendant_children_promotes_recreated_parent_back_to_expandable(
         )],
     );
 
-    let bbp = cache.node("/ssdev/services/bbp").expect("bbp node should exist");
-    assert!(bbp.has_children, "bbp should become expandable after descendants appear");
+    let bbp = cache
+        .node("/ssdev/services/bbp")
+        .expect("bbp node should exist");
+    assert!(
+        bbp.has_children,
+        "bbp should become expandable after descendants appear"
+    );
 
     let snapshot = cache.to_snapshot();
     assert!(
@@ -220,7 +228,9 @@ fn seed_reconcile_preserves_known_expandability_when_first_branch_read_is_empty(
 
     cache.reconcile_children_preserving_expandability("/ssdev/services/bbp", vec![]);
 
-    let bbp = cache.node("/ssdev/services/bbp").expect("bbp node should exist");
+    let bbp = cache
+        .node("/ssdev/services/bbp")
+        .expect("bbp node should exist");
     assert!(
         bbp.has_children,
         "initial subtree seed should not downgrade a known-expandable node"
@@ -255,7 +265,9 @@ fn authoritative_refresh_can_still_demote_parent_when_children_are_truly_gone() 
 
     cache.reconcile_children("/ssdev/services/bbp", vec![]);
 
-    let bbp = cache.node("/ssdev/services/bbp").expect("bbp node should exist");
+    let bbp = cache
+        .node("/ssdev/services/bbp")
+        .expect("bbp node should exist");
     assert!(
         !bbp.has_children,
         "authoritative watch refresh should be able to demote a branch back to leaf"

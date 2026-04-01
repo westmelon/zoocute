@@ -3,23 +3,32 @@ use serde::{Deserialize, Serialize};
 use crate::zk_core::interpreter::DataKind;
 use crate::zk_core::types::AuthMode;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RuntimeMode {
+    Standard,
+    Portable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeInfoDto {
+    pub mode: RuntimeMode,
+    pub data_root: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ZkLogEntry {
-    /// Unix timestamp in milliseconds.
     pub timestamp: i64,
-    /// "DEBUG" or "ERROR"
     pub level: String,
     pub connection_id: Option<String>,
     pub operation: String,
     pub path: Option<String>,
     pub success: bool,
-    /// Elapsed time for the ZooKeeper call in milliseconds.
     pub duration_ms: u64,
-    /// Short human-readable summary for debugging.
     pub message: String,
     pub error: Option<String>,
-    /// Optional structured extras (e.g. children_count, data_length).
     pub meta: Option<serde_json::Value>,
 }
 
@@ -123,4 +132,62 @@ pub struct ParserPluginRunResultDto {
     pub plugin_name: String,
     pub content: String,
     pub generated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedConnectionDto {
+    pub id: String,
+    pub name: String,
+    pub connection_string: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedConnectionsDto {
+    pub saved_connections: Vec<SavedConnectionDto>,
+    pub selected_connection_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PersistedConnectionsLoadStatusKindDto {
+    Missing,
+    Loaded,
+    Sanitized,
+    Quarantined,
+    QuarantineFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedConnectionsLoadStatusDto {
+    pub kind: PersistedConnectionsLoadStatusKindDto,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadPersistedConnectionsResponseDto {
+    pub connections: PersistedConnectionsDto,
+    pub status: PersistedConnectionsLoadStatusDto,
+}
+
+impl Default for PersistedConnectionsDto {
+    fn default() -> Self {
+        Self {
+            saved_connections: vec![SavedConnectionDto {
+                id: "local".to_string(),
+                name: "本地开发".to_string(),
+                connection_string: "127.0.0.1:2181".to_string(),
+                username: None,
+                password: None,
+                timeout_ms: 5_000,
+            }],
+            selected_connection_id: Some("local".to_string()),
+        }
+    }
 }

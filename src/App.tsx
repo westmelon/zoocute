@@ -17,6 +17,7 @@ import {
   choosePluginDirectory,
   getAppSettings,
   getEffectivePluginDirectory,
+  getRuntimeInfo,
   listParserPlugins,
   openPluginDirectory,
   resetPluginDirectory,
@@ -25,12 +26,13 @@ import {
   setWriteMode,
 } from "./lib/commands";
 import { loadAppSettings, saveAppSettings } from "./lib/settings";
-import type { AppSettings, ThemePreference, WriteMode } from "./lib/types";
+import type { AppSettings, RuntimeMode, ThemePreference, WriteMode } from "./lib/types";
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(loadAppSettings);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [effectivePluginDirectory, setEffectivePluginDirectory] = useState("");
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("standard");
   const [pluginRefreshToken, setPluginRefreshToken] = useState(0);
   const isReadOnly = settings.writeMode === "readonly";
 
@@ -95,6 +97,12 @@ export default function App() {
     void getEffectivePluginDirectory()
       .then((path) => {
         if (!cancelled) setEffectivePluginDirectory(path);
+      })
+      .catch(() => undefined);
+
+    void getRuntimeInfo()
+      .then((info) => {
+        if (!cancelled) setRuntimeMode(info.mode);
       })
       .catch(() => undefined);
 
@@ -344,6 +352,7 @@ export default function App() {
       <SettingsPanel
         isOpen={isSettingsOpen}
         settings={settings}
+        runtimeMode={runtimeMode}
         effectivePluginDirectory={effectivePluginDirectory}
         onClose={() => setIsSettingsOpen(false)}
         onThemeChange={(theme) => void handleThemeChange(theme)}

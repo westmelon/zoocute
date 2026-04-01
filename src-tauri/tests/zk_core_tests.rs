@@ -33,14 +33,20 @@ fn mock_adapter_returns_children_for_known_paths() {
     let adapter = MockAdapter::default();
     let children = adapter.list_children("/").expect("children should load");
 
-    assert!(children.iter().any(|child: &LoadedTreeNodeDto| child.name == "configs"));
-    assert!(children.iter().any(|child: &LoadedTreeNodeDto| child.name == "services"));
+    assert!(children
+        .iter()
+        .any(|child: &LoadedTreeNodeDto| child.name == "configs"));
+    assert!(children
+        .iter()
+        .any(|child: &LoadedTreeNodeDto| child.name == "services"));
 }
 
 #[test]
 fn session_blob_is_classified_binary() {
     let adapter = MockAdapter::default();
-    let details = adapter.get_node("/services/session_blob").expect("node should exist");
+    let details = adapter
+        .get_node("/services/session_blob")
+        .expect("node should exist");
 
     assert_eq!(details.data_kind, DataKind::Binary);
     assert!(!details.editable);
@@ -49,7 +55,9 @@ fn session_blob_is_classified_binary() {
 #[test]
 fn node_details_includes_full_stat_fields() {
     let adapter = MockAdapter::default();
-    let details = adapter.get_node("/configs/payment/switches").expect("node should exist");
+    let details = adapter
+        .get_node("/configs/payment/switches")
+        .expect("node should exist");
     assert!(details.c_zxid.is_some());
     assert!(details.m_zxid.is_some());
     assert!(details.c_version >= 0);
