@@ -3,6 +3,8 @@ import type {
   ConnectionResult,
   NodeDetails,
   NodeTreeItem,
+  ParserPlugin,
+  ParserPluginResult,
   TreeSnapshot,
   ZkLogEntry,
 } from "./types";
@@ -77,4 +79,20 @@ export async function readZkLogs(limit?: number): Promise<ZkLogEntry[]> {
 
 export async function clearZkLogs(): Promise<void> {
   await invoke("clear_zk_logs");
+}
+
+export async function listParserPlugins(): Promise<ParserPlugin[]> {
+  return invoke("list_parser_plugins");
+}
+
+export async function runParserPlugin(
+  connectionId: string,
+  path: string,
+  pluginId: string
+): Promise<ParserPluginResult> {
+  return invoke("run_parser_plugin", {
+    connectionId,
+    path,
+    pluginId,
+  });
 }

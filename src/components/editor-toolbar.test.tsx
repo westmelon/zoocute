@@ -74,6 +74,83 @@ it("hides charset selector for binary nodes", () => {
   expect(screen.queryByLabelText("字符编码")).not.toBeInTheDocument();
 });
 
+it("shows parser plugin selector and parse action", () => {
+  render(
+    <EditorToolbar
+      {...defaultProps}
+      plugins={[{ id: "dubbo-provider", name: "Dubbo Provider Decoder" }]}
+      selectedPluginId="dubbo-provider"
+      onPluginChange={vi.fn()}
+      onParsePlugin={vi.fn()}
+      pluginResultAvailable={false}
+      isPluginParsing={false}
+    />
+  );
+
+  expect(screen.getByLabelText("Plugin")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Parse" })).toBeInTheDocument();
+});
+
+it("calls plugin selection and parse callbacks", async () => {
+  const user = userEvent.setup();
+  const onPluginChange = vi.fn();
+  const onParsePlugin = vi.fn();
+
+  render(
+    <EditorToolbar
+      {...defaultProps}
+      plugins={[
+        { id: "dubbo-provider", name: "Dubbo Provider Decoder" },
+        { id: "kafka-message", name: "Kafka Message Decoder" },
+      ]}
+      selectedPluginId="dubbo-provider"
+      onPluginChange={onPluginChange}
+      onParsePlugin={onParsePlugin}
+      pluginResultAvailable={false}
+      isPluginParsing={false}
+    />
+  );
+
+  await user.selectOptions(screen.getByLabelText("Plugin"), "kafka-message");
+  await user.click(screen.getByRole("button", { name: "Parse" }));
+
+  expect(onPluginChange).toHaveBeenCalledWith("kafka-message");
+  expect(onParsePlugin).toHaveBeenCalledOnce();
+});
+
+it("shows plugin tab only after a parse result exists", () => {
+  render(
+    <EditorToolbar
+      {...defaultProps}
+      viewMode="plugin"
+      plugins={[{ id: "dubbo-provider", name: "Dubbo Provider Decoder" }]}
+      selectedPluginId="dubbo-provider"
+      onPluginChange={vi.fn()}
+      onParsePlugin={vi.fn()}
+      pluginResultAvailable={true}
+      isPluginParsing={false}
+    />
+  );
+
+  expect(screen.getByRole("button", { name: "PLUGIN" })).toBeInTheDocument();
+});
+
+it("hides plugin tab before a parse result exists", () => {
+  render(
+    <EditorToolbar
+      {...defaultProps}
+      plugins={[{ id: "dubbo-provider", name: "Dubbo Provider Decoder" }]}
+      selectedPluginId="dubbo-provider"
+      onPluginChange={vi.fn()}
+      onParsePlugin={vi.fn()}
+      pluginResultAvailable={false}
+      isPluginParsing={false}
+    />
+  );
+
+  expect(screen.queryByRole("button", { name: "PLUGIN" })).not.toBeInTheDocument();
+});
+
 it("calls onViewModeChange when tab clicked", async () => {
   const user = userEvent.setup();
   const onViewModeChange = vi.fn();

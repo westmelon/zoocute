@@ -11,6 +11,7 @@ import { TreeContextMenu } from "./components/tree-context-menu";
 import { ServerTabs } from "./components/server-tabs";
 import { LogFilterPane, LogListPane } from "./components/log-pane";
 import { useLogState } from "./hooks/use-log-state";
+import { listParserPlugins, runParserPlugin } from "./lib/commands";
 
 export default function App() {
   const {
@@ -24,6 +25,7 @@ export default function App() {
     connectionError,
     connectionNotice,
     saveError,
+    showConnectionError,
     openNode, toggleNode, ensureChildrenLoaded,
     pendingNavPath, confirmNavAndDiscard, cancelPendingNav,
     updateDraft, discardDraft, handleSave,
@@ -173,6 +175,11 @@ export default function App() {
             pendingNavPath={pendingNavPath}
             onConfirmNavAndDiscard={confirmNavAndDiscard}
             onCancelPendingNav={cancelPendingNav}
+            connectionId={activeTabId ?? ""}
+            nodePath={activePath ?? ""}
+            onListParserPlugins={listParserPlugins}
+            onRunParserPlugin={runParserPlugin}
+            onPluginError={showConnectionError}
           />
         )}
 

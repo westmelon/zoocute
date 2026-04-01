@@ -157,3 +157,33 @@ it("shows raw textarea in xml edit mode regardless of content validity", () => {
   );
   expect(screen.getByRole("textbox")).toHaveValue("<unclosed");
 });
+
+it("shows plugin output in plugin mode", () => {
+  render(
+    <NodeContentPanel
+      value="raw"
+      pluginContent="decoded output"
+      viewMode="plugin"
+      isEditing={false}
+      onChange={vi.fn()}
+      onFallbackToRaw={vi.fn()}
+    />
+  );
+
+  expect(screen.getByRole("textbox")).toHaveValue("decoded output");
+});
+
+it("falls back to raw content when plugin mode has no plugin output", () => {
+  render(
+    <NodeContentPanel
+      value="raw"
+      pluginContent={null}
+      viewMode="plugin"
+      isEditing={false}
+      onChange={vi.fn()}
+      onFallbackToRaw={vi.fn()}
+    />
+  );
+
+  expect(screen.getByRole("textbox")).toHaveValue("raw");
+});

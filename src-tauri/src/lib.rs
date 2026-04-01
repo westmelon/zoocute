@@ -1,13 +1,13 @@
 pub mod commands;
 pub mod domain;
 pub mod logging;
+pub mod parser_plugins;
 pub mod zk_core;
 
 use commands::{
-    clear_zk_logs, connect_server, create_node, delete_node, disconnect_server,
-    get_node_details, get_tree_snapshot, list_children, load_full_tree, read_zk_logs,
-    save_node,
-    AppState,
+    clear_zk_logs, connect_server, create_node, delete_node, disconnect_server, get_node_details,
+    get_tree_snapshot, list_children, list_parser_plugins, load_full_tree, read_zk_logs,
+    run_parser_plugin, save_node, AppState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -37,6 +37,8 @@ pub fn run() {
             load_full_tree,
             read_zk_logs,
             clear_zk_logs,
+            list_parser_plugins,
+            run_parser_plugin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

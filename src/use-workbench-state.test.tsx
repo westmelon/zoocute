@@ -1,7 +1,8 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
-import type { SavedConnection } from "./lib/types";
+import * as commands from "./lib/commands";
+import type { ParserPlugin, ParserPluginResult, SavedConnection } from "./lib/types";
 
 const { getNodeDetailsMock } = vi.hoisted(() => ({
   getNodeDetailsMock: vi.fn(async (_connectionId: string, path: string) => ({
@@ -38,6 +39,13 @@ vi.mock("./lib/commands", () => ({
   createNode: vi.fn(async () => {}),
   deleteNode: vi.fn(async () => {}),
   loadFullTree: vi.fn(async () => []),
+  listParserPlugins: vi.fn(async () => []),
+  runParserPlugin: vi.fn(async () => ({
+    pluginId: "",
+    pluginName: "",
+    content: "",
+    generatedAt: 0,
+  })),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -107,5 +115,27 @@ describe("draft management", () => {
       result.current.discardDraft("/configs");
     });
     expect(result.current.drafts["/configs"]).toBeUndefined();
+  });
+});
+
+describe("parser plugin contracts", () => {
+  it("constructs parser plugin types for the editor flow", () => {
+    const plugin: ParserPlugin = { id: "dubbo-provider", name: "Dubbo Provider Decoder" };
+    const result: ParserPluginResult = {
+      pluginId: "dubbo-provider",
+      pluginName: "Dubbo Provider Decoder",
+      content: "decoded output",
+      generatedAt: 1,
+    };
+
+    expectTypeOf(plugin).toMatchTypeOf<ParserPlugin>();
+    expectTypeOf(result).toMatchTypeOf<ParserPluginResult>();
+    expect(plugin.name).toContain("Decoder");
+    expect(result.content).toBe("decoded output");
+  });
+
+  it("exposes parser plugin command wrappers for the editor flow", () => {
+    expect(commands.listParserPlugins).toBeTypeOf("function");
+    expect(commands.runParserPlugin).toBeTypeOf("function");
   });
 });
