@@ -46,7 +46,11 @@ fn echo_command_args() -> (&'static str, Vec<&'static str>) {
 fn fail_command_args() -> (&'static str, Vec<&'static str>) {
     (
         "powershell",
-        vec!["-NoProfile", "-Command", "[Console]::Error.Write('boom'); exit 7"],
+        vec![
+            "-NoProfile",
+            "-Command",
+            "[Console]::Error.Write('boom'); exit 7",
+        ],
     )
 }
 

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:portable": "powershell -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",

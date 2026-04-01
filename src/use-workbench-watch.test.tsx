@@ -182,6 +182,16 @@ vi.mock("./lib/commands", () => ({
     message: "",
   })),
   disconnectServer: vi.fn(async () => {}),
+  loadPersistedConnections: vi.fn(async () => ({
+    connections: {
+      savedConnections: [
+        { id: "c1", name: "本地", connectionString: "127.0.0.1:2181", timeoutMs: 5000 },
+      ],
+      selectedConnectionId: "c1",
+    },
+    status: { kind: "loaded", message: null },
+  })),
+  savePersistedConnections: vi.fn(async (payload) => payload),
   listChildren: listChildrenMock,
   getNodeDetails: getNodeDetailsMock,
   getTreeSnapshot: getTreeSnapshotMock,
@@ -213,6 +223,9 @@ const CONN: SavedConnection = {
 
 async function connectAndGet() {
   const hook = renderHook(() => useWorkbenchState());
+  await waitFor(() => {
+    expect(hook.result.current.savedConnections).toEqual([CONN]);
+  });
   await act(async () => {
     await hook.result.current.submitConnection({
       connectionId: "c1",
@@ -227,7 +240,6 @@ async function connectAndGet() {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  localStorage.setItem("zoocute:connections", JSON.stringify([CONN]));
   setTreeSnapshot(structuredClone(initialTreeSnapshot));
 });
 

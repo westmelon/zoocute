@@ -2,10 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   ConnectionResult,
+  LoadPersistedConnectionsResponse,
   NodeDetails,
   NodeTreeItem,
   ParserPlugin,
   ParserPluginResult,
+  PersistedConnectionsDto,
+  RuntimeInfo,
   ThemePreference,
   TreeSnapshot,
   WriteMode,
@@ -84,8 +87,22 @@ export async function clearZkLogs(): Promise<void> {
   await invoke("clear_zk_logs");
 }
 
+export async function loadPersistedConnections(): Promise<LoadPersistedConnectionsResponse> {
+  return invoke("load_persisted_connections");
+}
+
+export async function savePersistedConnections(
+  connections: PersistedConnectionsDto
+): Promise<PersistedConnectionsDto> {
+  return invoke("save_persisted_connections", { connections });
+}
+
 export async function getAppSettings(): Promise<AppSettings> {
   return invoke("get_app_settings");
+}
+
+export async function getRuntimeInfo(): Promise<RuntimeInfo> {
+  return invoke("get_runtime_info");
 }
 
 export async function setThemePreference(theme: ThemePreference): Promise<AppSettings> {

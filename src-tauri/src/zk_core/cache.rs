@@ -154,7 +154,10 @@ impl ConnectionCache {
             .collect::<Vec<_>>();
         next_child_paths.sort();
 
-        let next_child_path_set = next_child_paths.iter().cloned().collect::<std::collections::HashSet<_>>();
+        let next_child_path_set = next_child_paths
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
 
         for child_path in previous_child_paths {
             if !next_child_path_set.contains(&child_path) {
@@ -199,10 +202,7 @@ impl ConnectionCache {
     }
 
     pub fn remove_subtree(&mut self, path: &str) {
-        let child_paths = self
-            .children_by_parent
-            .remove(path)
-            .unwrap_or_default();
+        let child_paths = self.children_by_parent.remove(path).unwrap_or_default();
 
         if let Some(parent_path) = self
             .nodes_by_path

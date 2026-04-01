@@ -30,6 +30,16 @@ const { getNodeDetailsMock } = vi.hoisted(() => ({
 vi.mock("./lib/commands", () => ({
   connectServer: vi.fn(async () => ({ connected: true, authMode: "anonymous", authSucceeded: true, message: "" })),
   disconnectServer: vi.fn(async () => {}),
+  loadPersistedConnections: vi.fn(async () => ({
+    connections: {
+      savedConnections: [
+        { id: "c1", name: "本地", connectionString: "127.0.0.1:2181", timeoutMs: 5000 },
+      ],
+      selectedConnectionId: "c1",
+    },
+    status: { kind: "loaded", message: null },
+  })),
+  savePersistedConnections: vi.fn(async (payload) => payload),
   listChildren: vi.fn(async (_id: string, path: string) => {
     if (path === "/") return [{ path: "/configs", name: "configs", hasChildren: false }];
     return [];
@@ -63,11 +73,13 @@ const CONN: SavedConnection = { id: "c1", name: "本地", connectionString: "127
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  localStorage.setItem("zoocute:connections", JSON.stringify([CONN]));
 });
 
 async function connectAndGet() {
   const hook = renderHook(() => useWorkbenchState());
+  await waitFor(() => {
+    expect(hook.result.current.savedConnections).toEqual([CONN]);
+  });
   await act(async () => {
     await hook.result.current.submitConnection({
       connectionId: "c1",

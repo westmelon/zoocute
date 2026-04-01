@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use zoocute_lib::commands::AppState;
+use zoocute_lib::commands::{AppState, RuntimeMode};
 
 fn temp_dir(name: &str) -> PathBuf {
     let suffix = SystemTime::now()
@@ -72,4 +72,49 @@ fn readonly_mode_blocks_write_commands() {
         .set_write_mode("readwrite".to_string())
         .expect("write mode should update");
     assert!(state.ensure_write_enabled().is_ok());
+}
+
+#[test]
+fn portable_mode_ignores_custom_plugin_directory_from_settings_file() {
+    let root = temp_dir("settings-portable-fixed-plugin-root");
+    let custom = root.join("custom-plugins");
+    fs::write(
+        root.join("settings.json"),
+        format!(
+            r#"{{
+                "theme": "dark",
+                "writeMode": "readonly",
+                "pluginDirectory": "{}"
+            }}"#,
+            custom.display()
+        ),
+    )
+    .unwrap();
+
+    let state = AppState::new_for_tests_with_runtime_mode(
+        root.join("log.jsonl"),
+        RuntimeMode::Portable,
+        root.clone(),
+    );
+
+    assert_eq!(state.get_settings().plugin_directory, None);
+    assert_eq!(state.plugin_root(), root.join("plugins"));
+}
+
+#[test]
+fn portable_mode_rejects_runtime_plugin_directory_override() {
+    let root = temp_dir("settings-portable-reject-plugin-root");
+    let state = AppState::new_for_tests_with_runtime_mode(
+        root.join("log.jsonl"),
+        RuntimeMode::Portable,
+        root.clone(),
+    );
+
+    let error = state
+        .set_plugin_directory(Some(root.join("custom-plugins").display().to_string()))
+        .expect_err("portable mode should reject custom plugin roots");
+
+    assert!(error.contains("zoo_data/plugins"));
+    assert_eq!(state.get_settings().plugin_directory, None);
+    assert_eq!(state.plugin_root(), root.join("plugins"));
 }
