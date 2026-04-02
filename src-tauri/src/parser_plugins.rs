@@ -8,6 +8,12 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ParserPluginManifest {
     pub id: String,
@@ -148,12 +154,16 @@ pub fn run_plugin_with_bytes(
     bytes: &[u8],
     timeout_ms: u64,
 ) -> Result<PluginExecutionOutput, String> {
-    let mut child = Command::new(&plugin.manifest.command)
+    let mut command = Command::new(&plugin.manifest.command);
+    command
         .args(&plugin.manifest.args)
         .current_dir(&plugin.directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_plugin_command(&mut command);
+
+    let mut child = command
         .spawn()
         .map_err(|error| {
             format!(
@@ -262,3 +272,11 @@ fn validate_manifest(manifest: &ParserPluginManifest, manifest_path: &Path) -> R
 
     Ok(())
 }
+
+#[cfg(windows)]
+fn configure_plugin_command(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn configure_plugin_command(_command: &mut Command) {}
