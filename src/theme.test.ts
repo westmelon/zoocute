@@ -72,6 +72,7 @@ describe("theme tokens", () => {
 
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
 
+    mediaQueryList.matches = true;
     listener?.({ matches: true });
 
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");

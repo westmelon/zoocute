@@ -35,8 +35,8 @@ export function watchSystemThemePreference(theme: ThemePreference) {
   }
 
   const mediaQuery = getSystemThemeMediaQuery();
-  const handleChange = (event: MediaQueryListEvent | { matches: boolean }) => {
-    document.documentElement.setAttribute("data-theme", event.matches ? "dark" : "light");
+  const handleChange: EventListener = () => {
+    document.documentElement.setAttribute("data-theme", mediaQuery.matches ? "dark" : "light");
   };
 
   mediaQuery.addEventListener("change", handleChange);
