@@ -649,36 +649,22 @@ export function useWorkbenchState(isReadOnly = false) {
   async function doOpenNode(path: string) {
     if (!activeTabId) return;
     setSaveError(null);
-    const session = sessionsRef.current.get(activeTabId);
-    if (!session) return;
-    const node = findNode(session.treeNodes, path);
-
-    if (node?.hasChildren) {
-      commitSession(activeTabId, {
-        ...session,
-        expandedPaths: new Set(session.expandedPaths).add(path),
-      });
-      await ensureChildrenLoaded(activeTabId, path);
-    }
 
     try {
       const nodeDetails = await getNodeDetails(activeTabId, path);
-      const hasChildren = nodeDetails.childrenCount > 0;
       const currentSession = sessionsRef.current.get(activeTabId);
       if (!currentSession) return;
       const nextSession = {
         ...currentSession,
-        treeNodes: updateNodeHasChildren(currentSession.treeNodes, path, hasChildren),
-        expandedPaths: hasChildren
-          ? new Set(currentSession.expandedPaths).add(path)
-          : currentSession.expandedPaths,
+        treeNodes: updateNodeHasChildren(
+          currentSession.treeNodes,
+          path,
+          nodeDetails.childrenCount > 0
+        ),
         activePath: path,
         activeNode: nodeDetails,
       };
       commitSession(activeTabId, nextSession);
-      if (hasChildren) {
-        await ensureChildrenLoaded(activeTabId, path, { force: true });
-      }
     } catch (error) {
       setConnectionError(error instanceof Error ? error.message : "节点读取失败");
     }

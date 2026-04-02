@@ -541,8 +541,8 @@ describe("watch events", () => {
 
     await waitFor(() => {
       const configs = result.current.treeNodes.find((node) => node.path === "/configs");
-      expect(configs?.children?.map((child) => child.name)).toEqual(["late-child"]);
-      expect(result.current.expandedPaths.has("/configs")).toBe(true);
+      expect(configs?.children).toBeUndefined();
+      expect(result.current.expandedPaths.has("/configs")).toBe(false);
     });
   });
 

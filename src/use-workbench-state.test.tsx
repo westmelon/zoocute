@@ -105,6 +105,20 @@ describe("openNode", () => {
     });
   });
 
+  it("does not expand the node when opening it from the label click flow", async () => {
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await result.current.openNode("/configs");
+    });
+
+    await waitFor(() => {
+      expect(result.current.activePath).toBe("/configs");
+    });
+
+    expect(result.current.expandedPaths.has("/configs")).toBe(false);
+  });
+
   it("does nothing when no session is active", async () => {
     const { result } = renderHook(() => useWorkbenchState());
     await act(async () => {

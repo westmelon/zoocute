@@ -1,14 +1,29 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { applyThemePreference, injectTheme } from "./app-bootstrap";
+import {
+  applyThemePreference,
+  injectTheme,
+  watchSystemThemePreference,
+} from "./app-bootstrap";
 
 describe("theme tokens", () => {
+  let mediaQueryList: {
+    matches: boolean;
+    addEventListener: ReturnType<typeof vi.fn>;
+    removeEventListener: ReturnType<typeof vi.fn>;
+  };
+
   beforeEach(() => {
     document.documentElement.removeAttribute("data-theme");
     localStorage.clear();
+    mediaQueryList = {
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
     // mock matchMedia (jsdom doesn't implement it)
     Object.defineProperty(window, "matchMedia", {
       writable: true,
-      value: vi.fn().mockReturnValue({ matches: false }),
+      value: vi.fn().mockImplementation(() => mediaQueryList),
     });
   });
 
@@ -45,5 +60,23 @@ describe("theme tokens", () => {
     injectTheme();
 
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("updates the applied theme when the OS theme changes in system mode", () => {
+    let listener: ((event: { matches: boolean }) => void) | undefined;
+    mediaQueryList.addEventListener.mockImplementation((eventName, cb) => {
+      if (eventName === "change") listener = cb as (event: { matches: boolean }) => void;
+    });
+
+    const stopWatching = watchSystemThemePreference("system");
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+
+    listener?.({ matches: true });
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+
+    stopWatching();
+    expect(mediaQueryList.removeEventListener).toHaveBeenCalled();
   });
 });

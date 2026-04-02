@@ -423,6 +423,18 @@ it("unsaved badge not shown when no draft changes", () => {
   expect(screen.queryByText("未保存")).not.toBeInTheDocument();
 });
 
+it("disables the edit toggle when the panel is in readonly mode", () => {
+  render(
+    <EditorPanel
+      {...defaultProps}
+      node={textNode}
+      isReadOnly={true}
+    />
+  );
+
+  expect(screen.getByRole("button", { name: "开启编辑" })).toBeDisabled();
+});
+
 // ── Diff panel ────────────────────────────────────────────────────────────────
 
 it("diff panel shows before/after content when '查看 Diff' is clicked", async () => {

@@ -1,7 +1,7 @@
 import "./styles/app.css";
 import "overlayscrollbars/overlayscrollbars.css";
 import { useEffect, useState } from "react";
-import { applyThemePreference } from "./app-bootstrap";
+import { applyThemePreference, watchSystemThemePreference } from "./app-bootstrap";
 import { usePanelResize } from "./hooks/use-panel-resize";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
 import { Ribbon } from "./components/ribbon";
@@ -110,6 +110,8 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => watchSystemThemePreference(settings.theme), [settings.theme]);
 
   async function syncSettings(next: AppSettings) {
     setSettings(next);

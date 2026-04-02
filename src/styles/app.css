@@ -525,8 +525,7 @@ body {
 .tree-node-row.active {
   background: var(--accent-subtle);
   color: var(--text-primary);
-  border-left: 2px solid var(--accent);
-  padding-left: 8px;
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .tree-expand-icon {
   width: 12px;
@@ -1000,6 +999,14 @@ body {
   background: var(--accent-subtle);
   color: var(--accent);
   border-color: var(--accent);
+}
+.edit-toggle:disabled,
+.edit-toggle:disabled:hover {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  border-color: var(--border);
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 
 /* ─── Toolbar Charset ────────────────────────────────── */
