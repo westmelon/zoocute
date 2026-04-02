@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  Charset,
   ConnectionResult,
   LoadPersistedConnectionsResponse,
   NodeDetails,
@@ -54,9 +55,10 @@ export async function getTreeSnapshot(connectionId: string): Promise<TreeSnapsho
 export async function saveNode(
   connectionId: string,
   path: string,
-  value: string
+  value: string,
+  charset: Charset
 ): Promise<void> {
-  return invoke("save_node", { connectionId, path, value });
+  return invoke("save_node", { connectionId, path, value, charset });
 }
 
 export async function createNode(

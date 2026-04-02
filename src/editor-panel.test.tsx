@@ -1,13 +1,23 @@
 import { act, render, screen } from "@testing-library/react";
 import React from "react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { EditorPanel } from "./components/editor-panel";
 import { nodeDetailsByPath } from "./lib/mock-data";
 
 const jsonNode = nodeDetailsByPath["/configs/payment/switches"];
 const textNode = nodeDetailsByPath["/services/gateway"];
 const binaryNode = nodeDetailsByPath["/services/session_blob"];
+const PLUGIN_TOAST_ERROR = "插件解析失败，请在 Plugin Error 模块查看详情";
+
+beforeEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: {
+      writeText: vi.fn().mockResolvedValue(undefined),
+    },
+  });
+});
 
 const defaultProps = {
   isEditing: false,
@@ -148,6 +158,25 @@ it("switches to plugin mode after a successful parse", async () => {
   expect(screen.getByRole("textbox")).toHaveValue("decoded payload");
 });
 
+it("hides plugin controls for non-binary nodes even when plugins are available", async () => {
+  render(
+    <EditorPanel
+      {...defaultProps}
+      node={textNode}
+      connectionId="conn-a"
+      nodePath="/services/gateway"
+      onListParserPlugins={vi.fn().mockResolvedValue([
+        { id: "dubbo-provider", name: "Dubbo Provider Decoder" },
+      ])}
+      onRunParserPlugin={vi.fn()}
+      onPluginError={vi.fn()}
+    />
+  );
+
+  expect(screen.queryByLabelText("Plugin")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Parse" })).not.toBeInTheDocument();
+});
+
 it("keeps the current view when plugin parsing fails", async () => {
   const user = userEvent.setup();
   const onPluginError = vi.fn();
@@ -172,7 +201,7 @@ it("keeps the current view when plugin parsing fails", async () => {
   await user.click(screen.getByRole("button", { name: "Parse" }));
 
   expect(screen.getByRole("button", { name: "RAW" })).toHaveAttribute("aria-pressed", "true");
-  expect(onPluginError).toHaveBeenCalledWith("exit code 7");
+  expect(onPluginError).toHaveBeenCalledWith(PLUGIN_TOAST_ERROR);
   expect(screen.getByText("Plugin Error")).toBeInTheDocument();
   expect(screen.getByText("exit code 7")).toBeInTheDocument();
   expect(screen.queryByText("Exception in thread")).not.toBeInTheDocument();
@@ -202,9 +231,7 @@ it("shows string-based plugin errors returned by the invoke layer", async () => 
 
   expect(screen.getByText("Plugin Error")).toBeInTheDocument();
   expect(screen.getByText(/ClassNotFoundException/)).toBeInTheDocument();
-  expect(onPluginError).toHaveBeenCalledWith(
-    "plugin Dubbo Hessian Parser failed with exit code 1: ClassNotFoundException"
-  );
+  expect(onPluginError).toHaveBeenCalledWith(PLUGIN_TOAST_ERROR);
 });
 
 it("shows full plugin errors in a details dialog", async () => {
@@ -242,6 +269,37 @@ it("shows full plugin errors in a details dialog", async () => {
   expect(screen.getByRole("alertdialog")).toBeInTheDocument();
   expect(screen.getByText(/Exception in thread/)).toBeInTheDocument();
   expect(screen.getByText(/Main.java:16/)).toBeInTheDocument();
+});
+
+it("shows copy success feedback after copying plugin error details", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+
+  render(
+    <EditorPanel
+      {...defaultProps}
+      node={binaryNode}
+      connectionId="conn-a"
+      nodePath="/services/session_blob"
+      onListParserPlugins={vi.fn().mockResolvedValue([
+        { id: "dubbo-provider", name: "Dubbo Provider Decoder" },
+      ])}
+      onRunParserPlugin={vi.fn().mockRejectedValue(new Error("exit code 7"))}
+      onPluginError={vi.fn()}
+    />
+  );
+
+  expect(await screen.findByLabelText("Plugin")).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText("Plugin"), "dubbo-provider");
+  await user.click(screen.getByRole("button", { name: "Parse" }));
+  await user.click(screen.getByRole("button", { name: "复制" }));
+
+  expect(writeText).toHaveBeenCalledWith("exit code 7");
+  expect(screen.getAllByRole("button", { name: "已复制" }).length).toBeGreaterThan(0);
 });
 
 it("resets plugin state when the node path changes", async () => {
@@ -328,7 +386,7 @@ it("clears plugin error after a successful parse retry", async () => {
 
   expect(await screen.findByRole("button", { name: "PLUGIN" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByText("Plugin Error")).not.toBeInTheDocument();
-  expect(onPluginError).toHaveBeenCalledWith("exit code 7");
+  expect(onPluginError).toHaveBeenCalledWith(PLUGIN_TOAST_ERROR);
 });
 
 it("clears plugin error when the node path changes", async () => {
@@ -399,6 +457,26 @@ it("save button is enabled when draft differs from node value", () => {
   });
   const saveBtn = screen.getByRole("button", { name: "保存" });
   expect(saveBtn).not.toBeDisabled();
+});
+
+it("saves using the currently selected charset", async () => {
+  const user = userEvent.setup();
+  const onSave = vi.fn();
+
+  render(
+    <EditorPanel
+      {...defaultProps}
+      node={textNode}
+      isEditing={true}
+      draft="中文"
+      onSave={onSave}
+    />
+  );
+
+  await user.selectOptions(screen.getByLabelText("字符编码"), "GBK");
+  await user.click(screen.getByRole("button", { name: "保存" }));
+
+  expect(onSave).toHaveBeenCalledWith("中文", "GBK");
 });
 
 // ── Dirty / unsaved state ─────────────────────────────────────────────────────

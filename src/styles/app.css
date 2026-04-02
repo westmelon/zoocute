@@ -688,6 +688,20 @@ body {
   gap: 4px;
   flex-shrink: 0;
 }
+.conn-primary-action-slot {
+  width: 24px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  flex-shrink: 0;
+}
+.conn-secondary-action-slot {
+  width: 24px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  flex-shrink: 0;
+}
 .conn-icon-btn {
   background: none;
   border: 1px solid transparent;

@@ -787,6 +787,7 @@ pub fn save_node(
     connection_id: String,
     path: String,
     value: String,
+    charset: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.ensure_write_enabled()?;
@@ -798,7 +799,7 @@ pub fn save_node(
         sessions.get(&connection_id).cloned()
     };
     match adapter {
-        Some(adapter) => adapter.save_node(&path, &value),
+        Some(adapter) => adapter.save_node(&path, &value, &charset),
         None => Err("写操作需要连接到 ZooKeeper".to_string()),
     }
 }

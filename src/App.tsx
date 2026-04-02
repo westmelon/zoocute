@@ -285,7 +285,7 @@ export default function App() {
             onEnterEdit={() => activePath && enterEditMode(activePath)}
             onExitEdit={() => activePath && exitEditMode(activePath)}
             onDraftChange={(value) => activePath && updateDraft(activePath, value)}
-            onSave={(value) => activePath && handleSave(activePath, value)}
+            onSave={(value, charset) => activePath && handleSave(activePath, value, charset)}
             onDiscard={() => activePath && discardDraft(activePath)}
             onFetchServerValue={() => activePath ? fetchServerValue(activePath) : Promise.resolve(null)}
             pendingNavPath={pendingNavPath}

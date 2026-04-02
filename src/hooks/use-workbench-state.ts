@@ -18,6 +18,7 @@ import {
 import type {
   ActiveSession,
   CacheEvent,
+  Charset,
   NodeTreeItem,
   RibbonMode,
   TreeSnapshot,
@@ -754,7 +755,7 @@ export function useWorkbenchState(isReadOnly = false) {
     exitEditModeSession(activeTabId, path);
   }
 
-  async function handleSave(path: string, value: string) {
+  async function handleSave(path: string, value: string, charset: Charset) {
     if (!activeTabId) return;
     if (isReadOnly) {
       setSaveError("当前为只读模式，禁止新增、修改、删除节点。");
@@ -762,7 +763,7 @@ export function useWorkbenchState(isReadOnly = false) {
     }
     setSaveError(null);
     try {
-      await saveNode(activeTabId, path, value);
+      await saveNode(activeTabId, path, value, charset);
       discardDraft(path);
       exitEditModeSession(activeTabId, path);
       const nodeDetails = await getNodeDetails(activeTabId, path);

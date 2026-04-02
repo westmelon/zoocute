@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { OverlayScrollbarsComponent } from "overlayscrollbars-react";
-import type { ViewMode } from "../lib/types";
+import type { Charset, ViewMode } from "../lib/types";
 
 const OS_OPTIONS = {
   scrollbars: { theme: "os-theme-dark", autoHide: "scroll" as const, autoHideDelay: 800 },
@@ -8,6 +8,9 @@ const OS_OPTIONS = {
 
 interface NodeContentPanelProps {
   value: string;
+  rawPreview: string;
+  charset: Charset;
+  shouldDecodeSource: boolean;
   pluginContent?: string | null;
   viewMode: ViewMode;
   isEditing: boolean;
@@ -116,14 +119,54 @@ function parseXml(value: string): { ok: true; formatted: string } | { ok: false 
   return { ok: true, formatted: formatXml(value) };
 }
 
+function hexToBytes(hex: string): Uint8Array | null {
+  const normalized = hex.trim();
+  if (normalized.length === 0) return new Uint8Array();
+  if (normalized.length % 2 !== 0 || /[^0-9a-f]/i.test(normalized)) return null;
+
+  const bytes = new Uint8Array(normalized.length / 2);
+  for (let index = 0; index < normalized.length; index += 2) {
+    bytes[index / 2] = Number.parseInt(normalized.slice(index, index + 2), 16);
+  }
+  return bytes;
+}
+
+function toDecoderLabel(charset: Charset): string {
+  switch (charset) {
+    case "GBK":
+      return "gbk";
+    case "ISO-8859-1":
+      return "iso-8859-1";
+    case "UTF-8":
+    default:
+      return "utf-8";
+  }
+}
+
+function decodeRawValue(value: string, rawPreview: string, charset: Charset): string {
+  const bytes = hexToBytes(rawPreview);
+  if (!bytes) return value;
+
+  try {
+    return new TextDecoder(toDecoderLabel(charset)).decode(bytes);
+  } catch {
+    return value;
+  }
+}
+
 export function NodeContentPanel({
   value,
+  rawPreview,
+  charset,
+  shouldDecodeSource,
   pluginContent,
   viewMode,
   isEditing,
   onChange,
   onFallbackToRaw,
 }: NodeContentPanelProps) {
+  const displayValue = shouldDecodeSource ? decodeRawValue(value, rawPreview, charset) : value;
+
   if (viewMode === "plugin") {
     return (
       <ContentTextarea
@@ -137,9 +180,9 @@ export function NodeContentPanel({
   if (viewMode === "json") {
     if (isEditing) {
       // In edit mode: skip formatting to prevent cursor jumps on partial input
-      return <ContentTextarea value={value} isEditing={true} onChange={onChange} />;
+      return <ContentTextarea value={displayValue} isEditing={true} onChange={onChange} />;
     }
-    const result = formatJson(value);
+    const result = formatJson(displayValue);
     if (!result.ok) {
       return <ParseErrorPanel mode="JSON" onFallbackToRaw={onFallbackToRaw} />;
     }
@@ -149,14 +192,14 @@ export function NodeContentPanel({
   if (viewMode === "xml") {
     if (isEditing) {
       // In edit mode: skip formatting to prevent cursor jumps on partial input
-      return <ContentTextarea value={value} isEditing={true} onChange={onChange} />;
+      return <ContentTextarea value={displayValue} isEditing={true} onChange={onChange} />;
     }
-    const result = parseXml(value);
+    const result = parseXml(displayValue);
     if (!result.ok) {
       return <ParseErrorPanel mode="XML" onFallbackToRaw={onFallbackToRaw} />;
     }
     return <ContentTextarea value={result.formatted} isEditing={false} onChange={onChange} />;
   }
 
-  return <ContentTextarea value={value} isEditing={isEditing} onChange={onChange} />;
+  return <ContentTextarea value={displayValue} isEditing={isEditing} onChange={onChange} />;
 }

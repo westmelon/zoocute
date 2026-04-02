@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use encoding_rs::{Encoding, GBK, UTF_8, WINDOWS_1252};
 use tauri::{async_runtime, AppHandle, Emitter, Wry};
 use zookeeper_client::{Acls, Client, CreateMode, EventType, OneshotWatcher, WatchedEvent};
 
@@ -551,9 +552,10 @@ impl LiveAdapter {
         });
     }
 
-    pub fn save_node(&self, path: &str, value: &str) -> Result<(), String> {
+    pub fn save_node(&self, path: &str, value: &str, charset: &str) -> Result<(), String> {
         let start = Instant::now();
-        let result = async_runtime::block_on(self.client.set_data(path, value.as_bytes(), None))
+        let encoded = encode_node_value(value, charset)?;
+        let result = async_runtime::block_on(self.client.set_data(path, &encoded, None))
             .map(|_| ())
             .map_err(map_zk_error);
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -763,6 +765,26 @@ impl LiveAdapter {
         });
         result
     }
+}
+
+fn charset_encoding(charset: &str) -> Option<&'static Encoding> {
+    match charset {
+        "UTF-8" => Some(UTF_8),
+        "GBK" => Some(GBK),
+        // TextDecoder("iso-8859-1") follows the WHATWG mapping to windows-1252.
+        "ISO-8859-1" => Some(WINDOWS_1252),
+        _ => None,
+    }
+}
+
+fn encode_node_value(value: &str, charset: &str) -> Result<Vec<u8>, String> {
+    let encoding =
+        charset_encoding(charset).ok_or_else(|| format!("unsupported charset: {charset}"))?;
+    let (encoded, _, had_errors) = encoding.encode(value);
+    if had_errors {
+        return Err(format!("当前内容无法使用 {charset} 编码保存"));
+    }
+    Ok(encoded.into_owned())
 }
 
 impl ReadOnlyZkAdapter for LiveAdapter {
@@ -1254,6 +1276,28 @@ mod tests {
     #[test]
     fn leaves_non_no_node_errors_unclassified() {
         assert!(classify_missing_node_race("ConnectionLoss").is_none());
+    }
+
+    #[test]
+    fn encode_node_value_uses_requested_charset() {
+      assert_eq!(
+          encode_node_value("中文", "GBK").expect("GBK should encode"),
+          vec![0xD6, 0xD0, 0xCE, 0xC4]
+      );
+      assert_eq!(
+          encode_node_value("é", "ISO-8859-1").expect("latin text should encode"),
+          vec![0xE9]
+      );
+      assert_eq!(
+          encode_node_value("hello", "UTF-8").expect("utf8 should encode"),
+          b"hello".to_vec()
+      );
+    }
+
+    #[test]
+    fn encode_node_value_rejects_unrepresentable_text() {
+        let error = encode_node_value("中文", "ISO-8859-1").expect_err("should fail");
+        assert!(error.contains("ISO-8859-1"));
     }
 
     #[test]

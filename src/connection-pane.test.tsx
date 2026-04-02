@@ -47,12 +47,56 @@ describe("ConnectionPane", () => {
     expect(screen.getByLabelText("删除 测试环境")).toBeInTheDocument();
   });
 
+  it("asks for confirmation before deleting a disconnected connection", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+
+    render(<ConnectionPane {...baseProps} onDelete={onDelete} />);
+
+    await user.click(screen.getByLabelText("删除 测试环境"));
+
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByText("是否确认删除连接“测试环境”？")).toBeInTheDocument();
+  });
+
+  it("deletes the connection only after confirmation", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+
+    render(<ConnectionPane {...baseProps} onDelete={onDelete} />);
+
+    await user.click(screen.getByLabelText("删除 测试环境"));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    expect(onDelete).toHaveBeenCalledWith("2");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("renders status and action icons with the shared connection icon treatment", () => {
     const { container } = render(
       <ConnectionPane {...baseProps} connectedIds={new Set(["1"])} />
     );
     expect(container.querySelectorAll(".conn-server-icon svg")).toHaveLength(connections.length);
     expect(container.querySelectorAll(".conn-icon-btn svg")).toHaveLength(3);
+  });
+
+  it("keeps the connect and disconnect actions in the same visual slot", () => {
+    const { rerender } = render(<ConnectionPane {...baseProps} connectedIds={new Set()} />);
+
+    let actionGroups = Array.from(document.querySelectorAll(".conn-card-actions"));
+    expect(actionGroups[0]?.firstElementChild?.firstElementChild).toHaveAttribute("aria-label", "连接 本地开发");
+    expect(actionGroups[1]?.firstElementChild?.firstElementChild).toHaveAttribute("aria-label", "连接 测试环境");
+    expect(actionGroups[0]?.lastElementChild?.firstElementChild).toHaveAttribute("aria-label", "删除 本地开发");
+    expect(actionGroups[1]?.lastElementChild?.firstElementChild).toHaveAttribute("aria-label", "删除 测试环境");
+
+    rerender(<ConnectionPane {...baseProps} connectedIds={new Set(["1", "2"])} />);
+
+    actionGroups = Array.from(document.querySelectorAll(".conn-card-actions"));
+    expect(actionGroups[0]?.firstElementChild?.firstElementChild).toHaveAttribute("aria-label", "断开 本地开发");
+    expect(actionGroups[1]?.firstElementChild?.firstElementChild).toHaveAttribute("aria-label", "断开 测试环境");
+    expect(actionGroups[0]?.lastElementChild?.childElementCount).toBe(0);
+    expect(actionGroups[1]?.lastElementChild?.childElementCount).toBe(0);
   });
 
   it("uses custom tooltip attributes instead of native title tooltips", () => {

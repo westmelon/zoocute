@@ -77,6 +77,7 @@ export function ConnectionPane({
   onDelete,
 }: ConnectionPaneProps) {
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<SavedConnection | null>(null);
   const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tooltipHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -127,6 +128,20 @@ export function ConnectionPane({
       onFocus: (e: React.FocusEvent<HTMLElement>) => scheduleTooltip(text, e.currentTarget),
       onBlur: hideTooltip,
     };
+  }
+
+  function requestDelete(connection: SavedConnection) {
+    setPendingDelete(connection);
+  }
+
+  function cancelDelete() {
+    setPendingDelete(null);
+  }
+
+  function confirmDelete() {
+    if (!pendingDelete) return;
+    onDelete(pendingDelete.id);
+    setPendingDelete(null);
   }
 
   useEffect(
@@ -181,34 +196,38 @@ export function ConnectionPane({
                 <div className="conn-card-addr">{c.connectionString}</div>
               </div>
               <div className="conn-card-actions" onClick={(e) => e.stopPropagation()}>
-                <button
-                  className="conn-icon-btn conn-tooltip-target"
-                  data-tooltip={actionLabel}
-                  aria-label={actionLabel}
-                  disabled={isConnecting && !isConnected}
-                  onClick={() => (isConnected ? onDisconnect(c.id) : onConnect(c))}
-                  {...bindTooltip(actionLabel)}
-                >
-                  {isPendingConnect ? (
-                    <span className="conn-spinner" aria-hidden="true" />
-                  ) : isConnected ? (
-                    <UnlinkIcon />
-                  ) : (
-                    <LinkIcon />
-                  )}
-                </button>
-                {!isConnected && (
+                <span className="conn-primary-action-slot">
                   <button
-                    className="conn-icon-btn conn-icon-btn--danger conn-tooltip-target"
-                    data-tooltip={`删除 ${c.name}`}
-                    aria-label={`删除 ${c.name}`}
-                    disabled={isConnecting}
-                    onClick={() => onDelete(c.id)}
-                    {...bindTooltip(`删除 ${c.name}`)}
+                    className="conn-icon-btn conn-tooltip-target"
+                    data-tooltip={actionLabel}
+                    aria-label={actionLabel}
+                    disabled={isConnecting && !isConnected}
+                    onClick={() => (isConnected ? onDisconnect(c.id) : onConnect(c))}
+                    {...bindTooltip(actionLabel)}
                   >
-                    <TrashIcon />
+                    {isPendingConnect ? (
+                      <span className="conn-spinner" aria-hidden="true" />
+                    ) : isConnected ? (
+                      <UnlinkIcon />
+                    ) : (
+                      <LinkIcon />
+                    )}
                   </button>
-                )}
+                </span>
+                <span className="conn-secondary-action-slot">
+                  {!isConnected && (
+                    <button
+                      className="conn-icon-btn conn-icon-btn--danger conn-tooltip-target"
+                      data-tooltip={`删除 ${c.name}`}
+                      aria-label={`删除 ${c.name}`}
+                      disabled={isConnecting}
+                      onClick={() => requestDelete(c)}
+                      {...bindTooltip(`删除 ${c.name}`)}
+                    >
+                      <TrashIcon />
+                    </button>
+                  )}
+                </span>
               </div>
             </div>
           );
@@ -226,6 +245,29 @@ export function ConnectionPane({
           style={{ left: `${tooltip.x}px`, top: `${tooltip.y}px` }}
         >
           {tooltip.text}
+        </div>
+      )}
+      {pendingDelete && (
+        <div className="dialog-backdrop">
+          <div
+            className="dialog"
+            role="alertdialog"
+            aria-labelledby="delete-connection-title"
+            aria-modal="true"
+          >
+            <p className="dialog-title" id="delete-connection-title">确认删除</p>
+            <div className="dialog-body">
+              <p>是否确认删除连接“{pendingDelete.name}”？</p>
+            </div>
+            <div className="dialog-actions">
+              <button type="button" className="btn" onClick={cancelDelete}>
+                取消
+              </button>
+              <button type="button" className="btn btn-primary" onClick={confirmDelete}>
+                确认删除
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>

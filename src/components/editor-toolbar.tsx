@@ -107,7 +107,7 @@ export function EditorToolbar({
         </select>
       )}
 
-      {pluginControls && pluginControls.plugins.length > 0 ? (
+      {pluginControls && !isTextNode && pluginControls.plugins.length > 0 ? (
         <>
           <select
             aria-label="Plugin"

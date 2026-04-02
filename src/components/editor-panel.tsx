@@ -12,6 +12,11 @@ interface PluginErrorState {
   message: string;
 }
 
+const PLUGIN_TOAST_ERROR = "插件解析失败，请在 Plugin Error 模块查看详情";
+const COPY_FEEDBACK_RESET_MS = 1500;
+
+type CopyFeedback = "idle" | "success" | "error";
+
 function extractPluginErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;
@@ -49,7 +54,7 @@ interface EditorPanelProps {
   onEnterEdit: () => void;
   onExitEdit: () => void;
   onDraftChange: (value: string) => void;
-  onSave: (value: string) => void;
+  onSave: (value: string, charset: Charset) => void;
   onDiscard: () => void;
   onFetchServerValue: () => Promise<string | null>;
   pendingNavPath?: string | null;
@@ -101,6 +106,7 @@ export function EditorPanel({
   const [isPluginParsing, setIsPluginParsing] = useState(false);
   const [pluginError, setPluginError] = useState<PluginErrorState | null>(null);
   const [isPluginErrorDialogOpen, setIsPluginErrorDialogOpen] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<CopyFeedback>("idle");
 
   useEffect(() => {
     let cancelled = false;
@@ -110,6 +116,7 @@ export function EditorPanel({
     setIsPluginParsing((current) => (current === false ? current : false));
     setPluginError((current) => (current === null ? current : null));
     setIsPluginErrorDialogOpen((current) => (current === false ? current : false));
+    setCopyFeedback((current) => (current === "idle" ? current : "idle"));
     setViewMode((current) => (current === "raw" ? current : "raw"));
     setShowDiff((current) => (current === false ? current : false));
 
@@ -167,7 +174,7 @@ export function EditorPanel({
   }
 
   function handleSave() {
-    onSave(currentValue);
+    onSave(currentValue, charset);
     setShowDiff(false);
     setServerValue(null);
   }
@@ -180,6 +187,7 @@ export function EditorPanel({
   function clearPluginError() {
     setPluginError(null);
     setIsPluginErrorDialogOpen(false);
+    setCopyFeedback("idle");
   }
 
   function handlePluginChange(pluginId: string) {
@@ -191,9 +199,22 @@ export function EditorPanel({
     if (!pluginError) return;
     try {
       await navigator.clipboard?.writeText(pluginError.message);
+      setCopyFeedback("success");
+      window.setTimeout(() => {
+        setCopyFeedback((current) => (current === "success" ? "idle" : current));
+      }, COPY_FEEDBACK_RESET_MS);
     } catch {
-      // Best-effort copy only.
+      setCopyFeedback("error");
+      window.setTimeout(() => {
+        setCopyFeedback((current) => (current === "error" ? "idle" : current));
+      }, COPY_FEEDBACK_RESET_MS);
     }
+  }
+
+  function getCopyButtonLabel() {
+    if (copyFeedback === "success") return "已复制";
+    if (copyFeedback === "error") return "复制失败";
+    return "复制";
   }
 
   async function handleParsePlugin() {
@@ -216,7 +237,7 @@ export function EditorPanel({
         plugins.find((plugin) => plugin.id === selectedPluginId)?.name ?? selectedPluginId;
       setPluginError({ pluginName, message });
       setIsPluginErrorDialogOpen(false);
-      onPluginError(message);
+      onPluginError(PLUGIN_TOAST_ERROR);
     } finally {
       setIsPluginParsing(false);
     }
@@ -253,6 +274,9 @@ export function EditorPanel({
       />
       <NodeContentPanel
         value={currentValue}
+        rawPreview={node.rawPreview}
+        charset={charset}
+        shouldDecodeSource={draft === undefined}
         pluginContent={pluginResult?.content}
         viewMode={viewMode}
         isEditing={isEditing}
@@ -292,7 +316,7 @@ export function EditorPanel({
                 className="btn"
                 onClick={() => void handleCopyPluginError()}
               >
-                复制
+                {getCopyButtonLabel()}
               </button>
             </div>
           </div>
@@ -317,7 +341,7 @@ export function EditorPanel({
             </div>
             <div className="dialog-actions">
               <button type="button" className="btn" onClick={() => void handleCopyPluginError()}>
-                复制
+                {getCopyButtonLabel()}
               </button>
               <button
                 type="button"

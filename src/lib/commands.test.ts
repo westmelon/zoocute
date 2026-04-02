@@ -12,6 +12,7 @@ import {
   listParserPlugins,
   loadPersistedConnections,
   runParserPlugin,
+  saveNode,
   savePersistedConnections,
 } from "./commands";
 
@@ -50,6 +51,19 @@ describe("parser plugin command wrappers", () => {
 });
 
 describe("persisted connection command wrappers", () => {
+  it("invokes save_node with charset-aware payload", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await saveNode("conn-1", "/services/gateway", "中文", "GBK");
+
+    expect(invokeMock).toHaveBeenCalledWith("save_node", {
+      connectionId: "conn-1",
+      path: "/services/gateway",
+      value: "中文",
+      charset: "GBK",
+    });
+  });
+
   it("invokes load_persisted_connections with no payload", async () => {
     invokeMock.mockResolvedValueOnce({
       connections: {

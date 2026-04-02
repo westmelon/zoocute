@@ -78,6 +78,7 @@ it("shows parser plugin selector and parse action", () => {
   render(
     <EditorToolbar
       {...defaultProps}
+      isTextNode={false}
       plugins={[{ id: "dubbo-provider", name: "Dubbo Provider Decoder" }]}
       selectedPluginId="dubbo-provider"
       onPluginChange={vi.fn()}
@@ -99,6 +100,7 @@ it("calls plugin selection and parse callbacks", async () => {
   render(
     <EditorToolbar
       {...defaultProps}
+      isTextNode={false}
       plugins={[
         { id: "dubbo-provider", name: "Dubbo Provider Decoder" },
         { id: "kafka-message", name: "Kafka Message Decoder" },
@@ -116,6 +118,24 @@ it("calls plugin selection and parse callbacks", async () => {
 
   expect(onPluginChange).toHaveBeenCalledWith("kafka-message");
   expect(onParsePlugin).toHaveBeenCalledOnce();
+});
+
+it("hides parser plugin controls for text nodes even when plugins are available", () => {
+  render(
+    <EditorToolbar
+      {...defaultProps}
+      isTextNode={true}
+      plugins={[{ id: "dubbo-provider", name: "Dubbo Provider Decoder" }]}
+      selectedPluginId="dubbo-provider"
+      onPluginChange={vi.fn()}
+      onParsePlugin={vi.fn()}
+      pluginResultAvailable={false}
+      isPluginParsing={false}
+    />
+  );
+
+  expect(screen.queryByLabelText("Plugin")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Parse" })).not.toBeInTheDocument();
 });
 
 it("shows plugin tab only after a parse result exists", () => {
