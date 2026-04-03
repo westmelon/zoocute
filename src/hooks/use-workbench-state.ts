@@ -138,10 +138,10 @@ function getParentPath(path: string): string {
 
 function isNoNodeError(error: unknown): boolean {
   if (error instanceof Error) {
-    return error.message.includes("NoNode") || error.message.includes("no node");
+    return error.message === "NoNode";
   }
   if (typeof error === "string") {
-    return error.includes("NoNode") || error.includes("no node");
+    return error === "NoNode";
   }
   return false;
 }
@@ -155,10 +155,10 @@ function extractErrorMessage(error: unknown): string | null {
 function formatConnectionError(error: unknown): string {
   const message = extractErrorMessage(error);
   if (!message) return "\u8fde\u63a5\u5931\u8d25";
-  if (message.includes("NoAuth") || message.includes("AuthFailed")) {
+  if (message === "NoAuth" || message === "AuthFailed") {
     return "\u8ba4\u8bc1\u5931\u8d25\uff1a\u8d26\u53f7\u6216\u5bc6\u7801\u9519\u8bef\uff0c\u6216\u5f53\u524d\u8d26\u53f7\u6ca1\u6709\u8bbf\u95ee\u6839\u8282\u70b9\u7684\u6743\u9650\u3002\u8bf7\u68c0\u67e5\u7528\u6237\u540d\u3001\u5bc6\u7801\uff0c\u5e76\u786e\u8ba4\u5df2\u4fdd\u5b58\u6700\u65b0\u914d\u7f6e\u3002";
   }
-  if (message.includes("Timeout")) {
+  if (message === "Timeout") {
     return "\u8fde\u63a5\u8d85\u65f6\uff1a\u8bf7\u68c0\u67e5\u8fde\u63a5\u5730\u5740\u548c ZooKeeper \u670d\u52a1\u662f\u5426\u53ef\u8fbe\u3002";
   }
   if (message.includes("empty connect string")) {

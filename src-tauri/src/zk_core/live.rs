@@ -1044,7 +1044,20 @@ fn connect_client(request: &ConnectRequestDto) -> Result<Client, String> {
 }
 
 fn map_zk_error(error: zookeeper_client::Error) -> String {
-    format!("{error:?}")
+    use zookeeper_client::Error;
+    match error {
+        Error::NoNode => "NoNode".to_string(),
+        Error::NodeExists => "NodeExists".to_string(),
+        Error::NotEmpty => "NotEmpty".to_string(),
+        Error::BadVersion => "BadVersion".to_string(),
+        Error::NoAuth => "NoAuth".to_string(),
+        Error::AuthFailed => "AuthFailed".to_string(),
+        Error::SessionExpired => "SessionExpired".to_string(),
+        Error::ConnectionLoss => "ConnectionLoss".to_string(),
+        Error::Timeout => "Timeout".to_string(),
+        Error::ClientClosed => "ClientClosed".to_string(),
+        other => format!("{other:?}"),
+    }
 }
 
 fn map_session_state_event(state: SessionState) -> Option<&'static str> {
