@@ -15,6 +15,7 @@ use crate::logging::ZkLogStore;
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::cache::{CacheStatus, ConnectionCache, NodeRecord};
 use crate::zk_core::interpreter::{hex_encode, interpret_data};
+use crate::zk_core::types::AuthMode;
 use zookeeper_client::SessionState;
 
 #[derive(Clone)]
@@ -23,6 +24,7 @@ pub struct LiveAdapter {
     connection_id: String,
     log_store: Arc<ZkLogStore>,
     app_handle: AppHandle<Wry>,
+    auth_mode: AuthMode,
     children_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
     data_watch_paths: Arc<std::sync::Mutex<HashSet<String>>>,
     cache: Arc<std::sync::Mutex<ConnectionCache>>,
@@ -485,6 +487,7 @@ impl LiveAdapter {
             connection_id: connection_id.to_string(),
             log_store,
             app_handle,
+            auth_mode: request.auth_mode(),
             children_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
             data_watch_paths: Arc::new(std::sync::Mutex::new(HashSet::new())),
             cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
@@ -651,10 +654,15 @@ impl LiveAdapter {
 
     pub fn create_node(&self, path: &str, data: &str) -> Result<(), String> {
         let start = Instant::now();
+        let acls = if self.auth_mode == AuthMode::Digest {
+            Acls::creator_all()
+        } else {
+            Acls::anyone_all()
+        };
         let result = async_runtime::block_on(self.client.create(
             path,
             data.as_bytes(),
-            &CreateMode::Persistent.with_acls(Acls::anyone_all()),
+            &CreateMode::Persistent.with_acls(acls),
         ))
         .map(|_| ())
         .map_err(map_zk_error);
