@@ -25,11 +25,11 @@ import {
   setThemePreference,
   setWriteMode,
 } from "./lib/commands";
-import { loadAppSettings, saveAppSettings } from "./lib/settings";
+import { DEFAULT_APP_SETTINGS } from "./lib/settings";
 import type { AppSettings, RuntimeMode, ThemePreference, WriteMode } from "./lib/types";
 
 export default function App() {
-  const [settings, setSettings] = useState<AppSettings>(loadAppSettings);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [effectivePluginDirectory, setEffectivePluginDirectory] = useState("");
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("standard");
@@ -89,7 +89,6 @@ export default function App() {
       .then((next) => {
         if (cancelled) return;
         setSettings(next);
-        saveAppSettings(next);
         applyThemePreference(next.theme);
       })
       .catch(() => undefined);
@@ -115,7 +114,6 @@ export default function App() {
 
   async function syncSettings(next: AppSettings) {
     setSettings(next);
-    saveAppSettings(next);
     applyThemePreference(next.theme);
     try {
       const path = await getEffectivePluginDirectory();

@@ -2,7 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "./styles/app.css";
 import App from "./App";
-import { loadAppSettings } from "./lib/settings";
 import type { ThemePreference } from "./lib/types";
 
 function getSystemThemeMediaQuery() {
@@ -46,7 +45,7 @@ export function watchSystemThemePreference(theme: ThemePreference) {
 }
 
 export function injectTheme() {
-  applyThemePreference(loadAppSettings().theme);
+  applyThemePreference("system");
 }
 
 export function bootstrapApp() {
