@@ -226,7 +226,7 @@ fn handle_children_watch_event(watcher: ChildrenWatcher, event: WatchedEvent) {
     );
 
     if should_reregister {
-        std::thread::spawn(move || {
+        async_runtime::spawn_blocking(move || {
             if is_shutdown(&watcher.shutdown) {
                 return;
             }
@@ -346,7 +346,7 @@ fn handle_data_watch_event(watcher: DataWatcher, event: WatchedEvent) {
     );
 
     if should_reregister {
-        std::thread::spawn(move || {
+        async_runtime::spawn_blocking(move || {
             if is_shutdown(&watcher.shutdown) {
                 return;
             }
@@ -513,7 +513,7 @@ impl LiveAdapter {
         let app_handle = self.app_handle.clone();
         let shutdown = Arc::clone(&self.shutdown);
 
-        std::thread::spawn(move || {
+        async_runtime::spawn_blocking(move || {
             if is_shutdown(&shutdown) {
                 return;
             }
