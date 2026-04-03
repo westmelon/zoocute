@@ -548,6 +548,12 @@ fn rename_corrupt_connections_file(
         return Ok(corrupt_connections_path(path, timestamp_millis));
     }
     let corrupt_path = corrupt_connections_path(path, timestamp_millis);
+    if corrupt_path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("quarantine target already exists: {}", corrupt_path.display()),
+        ));
+    }
     fs::rename(path, &corrupt_path)?;
     Ok(corrupt_path)
 }
