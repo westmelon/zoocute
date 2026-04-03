@@ -333,7 +333,7 @@ export function useWorkbenchState(isReadOnly = false) {
   }
 
   const handleWatchEvent = useEffectEvent(async (event: WatchEvent) => {
-    console.debug("[zk-watch-event] received", event);
+    if (import.meta.env.DEV) console.debug("[zk-watch-event] received", event);
     const session = sessionsRef.current.get(event.connectionId);
     if (!session) return;
 
