@@ -799,6 +799,15 @@ impl LiveAdapter {
     }
 
     fn delete_recursive(&self, path: &str) -> Result<(), String> {
+        self.delete_recursive_inner(path, 0)
+    }
+
+    fn delete_recursive_inner(&self, path: &str, depth: usize) -> Result<(), String> {
+        if depth > 500 {
+            return Err(format!(
+                "delete_recursive exceeded maximum depth of 500 at path: {path}"
+            ));
+        }
         let (children, _) =
             async_runtime::block_on(self.client.get_children(path)).map_err(map_zk_error)?;
         for child in &children {
@@ -807,7 +816,7 @@ impl LiveAdapter {
             } else {
                 format!("{path}/{child}")
             };
-            self.delete_recursive(&child_path)?;
+            self.delete_recursive_inner(&child_path, depth + 1)?;
         }
         let start = Instant::now();
         let result = async_runtime::block_on(self.client.delete(path, None)).map_err(map_zk_error);
