@@ -38,6 +38,7 @@ pub struct ConnectRequestDto {
     pub connection_string: String,
     pub username: Option<String>,
     pub password: Option<String>,
+    pub timeout_ms: u64,
 }
 
 impl ConnectRequestDto {

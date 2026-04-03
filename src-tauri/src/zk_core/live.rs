@@ -1015,7 +1015,7 @@ impl LiveAdapter {
 }
 
 fn connect_client(request: &ConnectRequestDto) -> Result<Client, String> {
-    let mut connector = Client::connector().with_session_timeout(Duration::from_secs(8));
+    let mut connector = Client::connector().with_session_timeout(Duration::from_millis(request.timeout_ms));
     if let (Some(username), Some(password)) = (&request.username, &request.password) {
         if !username.is_empty() && !password.is_empty() {
             let auth = format!("{username}:{password}");
@@ -1470,6 +1470,7 @@ mod tests {
             password: Some(
                 std::env::var("ZOOCUTE_REAL_ZK_PASS").unwrap_or_else(|_| "admin".to_string()),
             ),
+            timeout_ms: 8_000,
         };
 
         let client = connect_client(&request).expect("real zookeeper connection should succeed");
@@ -1566,6 +1567,7 @@ mod tests {
             password: Some(
                 std::env::var("ZOOCUTE_REAL_ZK_PASS").unwrap_or_else(|_| "admin".to_string()),
             ),
+            timeout_ms: 8_000,
         }
     }
 

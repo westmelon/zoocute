@@ -18,7 +18,7 @@ import type {
 
 export async function connectServer(
   connectionId: string,
-  input: { connectionString: string; username?: string; password?: string }
+  input: { connectionString: string; username?: string; password?: string; timeoutMs?: number }
 ): Promise<ConnectionResult> {
   return invoke("connect_server", {
     connectionId,
@@ -26,6 +26,7 @@ export async function connectServer(
       connectionString: input.connectionString,
       username: input.username || null,
       password: input.password || null,
+      timeoutMs: input.timeoutMs ?? 8000,
     },
   });
 }

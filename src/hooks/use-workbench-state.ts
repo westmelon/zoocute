@@ -606,6 +606,7 @@ export function useWorkbenchState(isReadOnly = false) {
         connectionString: params.connectionString,
         username: params.username || undefined,
         password: params.password || undefined,
+        timeoutMs: savedConnections.find((c) => c.id === params.connectionId)?.timeoutMs,
       });
       connected = true;
       const rootNodes = await listChildren(params.connectionId, "/");
@@ -661,6 +662,7 @@ export function useWorkbenchState(isReadOnly = false) {
         connectionString: params.connectionString,
         username: params.username || undefined,
         password: params.password || undefined,
+        timeoutMs: savedConnections.find((c) => c.id === params.connectionId)?.timeoutMs,
       });
       await listChildren(params.connectionId, "/");
       setConnectionNotice("连接测试成功");

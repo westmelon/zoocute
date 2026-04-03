@@ -12,6 +12,7 @@ fn reports_digest_auth_mode_when_credentials_exist() {
         connection_string: "127.0.0.1:2181".into(),
         username: Some("demo".into()),
         password: Some("secret".into()),
+        timeout_ms: 8_000,
     };
 
     assert_eq!(request.auth_mode(), AuthMode::Digest);
@@ -23,6 +24,7 @@ fn reports_anonymous_auth_mode_when_credentials_are_absent() {
         connection_string: "127.0.0.1:2181".into(),
         username: None,
         password: None,
+        timeout_ms: 8_000,
     };
 
     assert_eq!(request.auth_mode(), AuthMode::Anonymous);

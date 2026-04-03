@@ -244,6 +244,7 @@ describe("testConnection", () => {
       connectionString: "127.0.0.1:2181",
       username: undefined,
       password: undefined,
+      timeoutMs: 5000,
     });
     expect(listChildrenMock).toHaveBeenCalledWith("local", "/");
     expect(disconnectServerMock).toHaveBeenCalledWith("local");
