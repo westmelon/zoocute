@@ -6,16 +6,19 @@ import type {
   CacheEvent,
   NodeTreeItem,
   SavedConnection,
+  SessionEvent,
   TreeSnapshot,
   WatchEvent,
 } from "./lib/types";
 
 type WatchHandler = (event: { payload: WatchEvent }) => void;
 type CacheHandler = (event: { payload: CacheEvent }) => void;
+type SessionHandler = (event: { payload: SessionEvent }) => void;
 
 const {
   initialTreeSnapshot,
   setTreeSnapshot,
+  connectServerMock,
   listChildrenMock,
   getNodeDetailsMock,
   getTreeSnapshotMock,
@@ -24,6 +27,7 @@ const {
   unlistenMock,
   emitWatchEvent,
   emitCacheEvent,
+  emitSessionEvent,
 } = vi.hoisted(() => {
   const unlistenMock = vi.fn();
   const handlers = new Map<string, unknown>();
@@ -91,6 +95,12 @@ const {
 
   return {
     initialTreeSnapshot,
+    connectServerMock: vi.fn(async () => ({
+      connected: true,
+      authMode: "anonymous",
+      authSucceeded: true,
+      message: "",
+    })),
     listChildrenMock: vi.fn(async (_connectionId: string, path: string) => {
       if (path === "/") {
         return [{ path: "/configs", name: "configs", hasChildren: true }];
@@ -129,7 +139,8 @@ const {
       content: "",
       generatedAt: 0,
     })),
-    webviewListenMock: vi.fn(async (_eventName: string, cb: WatchHandler | CacheHandler) => {
+    webviewListenMock: vi.fn(
+      async (_eventName: string, cb: WatchHandler | CacheHandler | SessionHandler) => {
       handlers.set(_eventName, cb);
       return unlistenMock;
     }),
@@ -148,6 +159,10 @@ const {
       (handlers.get("zk-cache-event") as CacheHandler | undefined)?.({
         payload: payload as CacheEvent,
       });
+      await Promise.resolve();
+    },
+    emitSessionEvent: async (payload: SessionEvent) => {
+      (handlers.get("zk-session-event") as SessionHandler | undefined)?.({ payload });
       await Promise.resolve();
     },
     setTreeSnapshot: (next: TreeSnapshot) => {
@@ -175,12 +190,7 @@ async function expandPath(result: { current: ReturnType<typeof useWorkbenchState
 }
 
 vi.mock("./lib/commands", () => ({
-  connectServer: vi.fn(async () => ({
-    connected: true,
-    authMode: "anonymous",
-    authSucceeded: true,
-    message: "",
-  })),
+  connectServer: connectServerMock,
   disconnectServer: vi.fn(async () => {}),
   loadPersistedConnections: vi.fn(async () => ({
     connections: {
@@ -249,12 +259,41 @@ describe("watch events", () => {
 
     expect(webviewListenMock).toHaveBeenCalledWith("zk-watch-event", expect.any(Function));
     expect(webviewListenMock).toHaveBeenCalledWith("zk-cache-event", expect.any(Function));
+    expect(webviewListenMock).toHaveBeenCalledWith("zk-session-event", expect.any(Function));
 
     await act(async () => {
       await result.current.disconnectSession("c1");
     });
 
-    expect(unlistenMock).toHaveBeenCalledTimes(2);
+    expect(unlistenMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("auto reconnects and restores the active node after a session expires", async () => {
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await result.current.openNode("/configs");
+    });
+
+    await waitFor(() => {
+      expect(result.current.activePath).toBe("/configs");
+    });
+
+    await act(async () => {
+      await emitSessionEvent({
+        connectionId: "c1",
+        eventType: "expired",
+      });
+    });
+
+    await waitFor(() => {
+      expect(connectServerMock).toHaveBeenCalledTimes(2);
+    });
+
+    await waitFor(() => {
+      expect(result.current.activePath).toBe("/configs");
+      expect(result.current.activeNode?.path).toBe("/configs");
+    });
   });
 
   it("force-refreshes children when a children_changed event arrives", async () => {

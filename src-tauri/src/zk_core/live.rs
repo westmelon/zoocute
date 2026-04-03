@@ -9,12 +9,13 @@ use zookeeper_client::{Acls, Client, CreateMode, EventType, OneshotWatcher, Watc
 
 use crate::domain::{
     CacheEventDto, ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
-    TreeSnapshotDto, WatchEventDto, ZkLogEntry,
+    SessionEventDto, TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
 use crate::zk_core::cache::{CacheStatus, ConnectionCache, NodeRecord};
 use crate::zk_core::interpreter::{hex_encode, interpret_data};
+use zookeeper_client::SessionState;
 
 #[derive(Clone)]
 pub struct LiveAdapter {
@@ -70,6 +71,16 @@ fn emit_watch_event(
             connection_id: connection_id.to_string(),
             event_type: event_type.to_string(),
             path: path.to_string(),
+        },
+    );
+}
+
+fn emit_session_event(app_handle: &AppHandle<Wry>, connection_id: &str, event_type: &str) {
+    let _ = app_handle.emit(
+        "zk-session-event",
+        SessionEventDto {
+            connection_id: connection_id.to_string(),
+            event_type: event_type.to_string(),
         },
     );
 }
@@ -479,6 +490,7 @@ impl LiveAdapter {
             cache: Arc::new(std::sync::Mutex::new(ConnectionCache::new())),
             shutdown: Arc::new(AtomicBool::new(false)),
         };
+        adapter.spawn_state_watch_task();
         mark_cache_resyncing(&adapter.cache);
         append_cache_resync_log(
             &adapter.log_store,
@@ -547,6 +559,52 @@ impl LiveAdapter {
                         "/",
                         &error,
                     );
+                }
+            }
+        });
+    }
+
+    fn spawn_state_watch_task(&self) {
+        let mut watcher = self.client.state_watcher();
+        let connection_id = self.connection_id.clone();
+        let log_store = Arc::clone(&self.log_store);
+        let app_handle = self.app_handle.clone();
+        let shutdown = Arc::clone(&self.shutdown);
+
+        async_runtime::spawn(async move {
+            loop {
+                if is_shutdown(&shutdown) {
+                    return;
+                }
+
+                let state = watcher.changed().await;
+                if is_shutdown(&shutdown) {
+                    return;
+                }
+
+                let Some(event_type) = map_session_state_event(state) else {
+                    if is_terminal_session_state(state) {
+                        return;
+                    }
+                    continue;
+                };
+
+                emit_session_event(&app_handle, &connection_id, event_type);
+                append_watch_log(
+                    &log_store,
+                    &connection_id,
+                    "session_state_changed",
+                    "/",
+                    true,
+                    format!("session state changed to {event_type}"),
+                    Some(serde_json::json!({
+                        "sessionState": format!("{state:?}"),
+                    })),
+                    None,
+                );
+
+                if is_terminal_session_state(state) {
+                    return;
                 }
             }
         });
@@ -972,6 +1030,20 @@ fn map_zk_error(error: zookeeper_client::Error) -> String {
     format!("{error:?}")
 }
 
+fn map_session_state_event(state: SessionState) -> Option<&'static str> {
+    match state {
+        SessionState::SyncConnected | SessionState::ConnectedReadOnly => Some("connected"),
+        SessionState::Disconnected => Some("disconnected"),
+        SessionState::Expired => Some("expired"),
+        SessionState::AuthFailed => Some("auth_failed"),
+        SessionState::Closed => Some("closed"),
+    }
+}
+
+fn is_terminal_session_state(state: SessionState) -> bool {
+    matches!(state, SessionState::Expired | SessionState::AuthFailed | SessionState::Closed)
+}
+
 fn append_cache_log(log_store: &ZkLogStore, connection_id: &str, operation: &str, path: &str) {
     log_store.append_operation(
         Some(connection_id),
@@ -1230,7 +1302,7 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use zookeeper_client::{Acls, EventType};
+    use zookeeper_client::{Acls, EventType, SessionState};
 
     #[test]
     fn children_watch_events_map_to_expected_app_events() {
@@ -1261,6 +1333,34 @@ mod tests {
         );
         assert_eq!(map_data_watch_event(EventType::NodeCreated), None);
         assert_eq!(map_data_watch_event(EventType::NodeChildrenChanged), None);
+    }
+
+    #[test]
+    fn session_states_map_to_expected_frontend_events() {
+        assert_eq!(map_session_state_event(SessionState::SyncConnected), Some("connected"));
+        assert_eq!(
+            map_session_state_event(SessionState::ConnectedReadOnly),
+            Some("connected")
+        );
+        assert_eq!(
+            map_session_state_event(SessionState::Disconnected),
+            Some("disconnected")
+        );
+        assert_eq!(map_session_state_event(SessionState::Expired), Some("expired"));
+        assert_eq!(
+            map_session_state_event(SessionState::AuthFailed),
+            Some("auth_failed")
+        );
+        assert_eq!(map_session_state_event(SessionState::Closed), Some("closed"));
+    }
+
+    #[test]
+    fn terminal_session_states_are_detected() {
+        assert!(!is_terminal_session_state(SessionState::SyncConnected));
+        assert!(!is_terminal_session_state(SessionState::Disconnected));
+        assert!(is_terminal_session_state(SessionState::Expired));
+        assert!(is_terminal_session_state(SessionState::AuthFailed));
+        assert!(is_terminal_session_state(SessionState::Closed));
     }
 
     #[test]

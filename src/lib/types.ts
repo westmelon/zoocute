@@ -176,6 +176,11 @@ export interface WatchEvent {
   path: string;
 }
 
+export interface SessionEvent {
+  connectionId: string;
+  eventType: "connected" | "disconnected" | "expired" | "auth_failed" | "closed";
+}
+
 export interface CacheEvent {
   connectionId: string;
   eventType: "snapshot_ready" | "nodes_added" | "nodes_removed" | "nodes_updated" | "resync_completed";

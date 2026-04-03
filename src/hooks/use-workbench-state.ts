@@ -21,6 +21,8 @@ import type {
   Charset,
   NodeTreeItem,
   RibbonMode,
+  SavedConnection,
+  SessionEvent,
   TreeSnapshot,
   WatchEvent,
 } from "../lib/types";
@@ -253,8 +255,10 @@ export function useWorkbenchState(isReadOnly = false) {
   const nodeSearch = useNodeSearch(activeTabId);
   const unlistenRefs = useRef<Map<string, () => void>>(new Map());
   const cacheUnlistenRefs = useRef<Map<string, () => void>>(new Map());
+  const sessionUnlistenRefs = useRef<Map<string, () => void>>(new Map());
   const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
   const cacheSnapshotsRef = useRef<Map<string, TreeSnapshot>>(new Map());
+  const reconnectingRefs = useRef<Set<string>>(new Set());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
@@ -309,6 +313,10 @@ export function useWorkbenchState(isReadOnly = false) {
         unlisten();
       }
       cacheUnlistenRefs.current.clear();
+      for (const unlisten of sessionUnlistenRefs.current.values()) {
+        unlisten();
+      }
+      sessionUnlistenRefs.current.clear();
     };
   }, []);
 
@@ -386,6 +394,136 @@ export function useWorkbenchState(isReadOnly = false) {
     }
   });
 
+  const openNodeForConnection = useEffectEvent(async (connectionId: string, path: string) => {
+    setSaveError(null);
+
+    try {
+      const nodeDetails = await getNodeDetails(connectionId, path);
+      const currentSession = sessionsRef.current.get(connectionId);
+      if (!currentSession) return;
+      const nextSession = {
+        ...currentSession,
+        treeNodes: updateNodeHasChildren(
+          currentSession.treeNodes,
+          path,
+          nodeDetails.childrenCount > 0
+        ),
+        activePath: path,
+        activeNode: nodeDetails,
+      };
+      commitSession(connectionId, nextSession);
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : "节点读取失败");
+    }
+  });
+
+  async function restoreSessionView(connectionId: string, session: ActiveSession) {
+    const expandedPaths = [...session.expandedPaths].sort(
+      (left, right) => buildAncestors(left).length - buildAncestors(right).length
+    );
+    for (const path of expandedPaths) {
+      await ensureChildrenLoaded(connectionId, path, { force: true });
+    }
+    updateSession(connectionId, (current) => ({
+      ...current,
+      expandedPaths: new Set(session.expandedPaths),
+      drafts: session.drafts,
+      editingPaths: new Set(session.editingPaths),
+    }));
+    if (session.activePath) {
+      await openNodeForConnection(connectionId, session.activePath);
+    }
+  }
+
+  async function restartBackgroundIndex(connectionId: string) {
+    setIndexingConnections((prev) => new Set([...prev, connectionId]));
+    loadFullTreeCmd(connectionId)
+      .then((allNodes) => nodeSearch.bulkIndex(connectionId, allNodes))
+      .catch(() => { /* partial index is still useful; silently ignore */ })
+      .finally(() => {
+        setIndexingConnections((prev) => {
+          const next = new Set(prev);
+          next.delete(connectionId);
+          return next;
+        });
+      });
+  }
+
+  const reconnectSession = useEffectEvent(async (connectionId: string) => {
+    if (reconnectingRefs.current.has(connectionId)) return;
+    const session = sessionsRef.current.get(connectionId);
+    if (!session) return;
+
+    reconnectingRefs.current.add(connectionId);
+    setConnectionError(null);
+    setConnectionNotice("连接已失效，正在重新连接…");
+    try {
+      await disconnectServerCmd(connectionId).catch(() => {
+        // best-effort cleanup before re-establishing a fresh session
+      });
+      await connectServer(connectionId, {
+        connectionString: session.connection.connectionString,
+        username: session.connection.username || undefined,
+        password: session.connection.password || undefined,
+      });
+      const rootNodes = await listChildren(connectionId, "/");
+      const latestSession = sessionsRef.current.get(connectionId) ?? session;
+      const nextSession: ActiveSession = {
+        ...latestSession,
+        connection: latestSession.connection,
+        treeNodes: rootNodes,
+        loadingPaths: new Set(),
+        activeNode: null,
+      };
+      commitSession(connectionId, nextSession);
+      nodeSearch.clearSession(connectionId);
+      nodeSearch.indexNodes(connectionId, "/", rootNodes);
+      cacheSnapshotsRef.current.delete(connectionId);
+      void cacheTreeSnapshot(connectionId);
+      await restoreSessionView(connectionId, latestSession);
+      void restartBackgroundIndex(connectionId);
+      setConnectionNotice("连接已恢复");
+    } catch (error) {
+      setConnectionError(formatConnectionError(error));
+    } finally {
+      reconnectingRefs.current.delete(connectionId);
+    }
+  });
+
+  const handleSessionEvent = useEffectEvent(async (event: SessionEvent) => {
+    const session = sessionsRef.current.get(event.connectionId);
+    if (!session) return;
+
+    if (event.eventType === "disconnected") {
+      setConnectionError(null);
+      setConnectionNotice("连接已中断，等待网络恢复…");
+      return;
+    }
+
+    if (event.eventType === "connected") {
+      if (reconnectingRefs.current.has(event.connectionId)) return;
+      setConnectionError(null);
+      setConnectionNotice("连接已恢复");
+      return;
+    }
+
+    if (event.eventType === "expired") {
+      await reconnectSession(event.connectionId);
+      return;
+    }
+
+    if (event.eventType === "auth_failed") {
+      setConnectionNotice(null);
+      setConnectionError("连接认证失败，请检查用户名和密码。");
+      return;
+    }
+
+    if (event.eventType === "closed") {
+      setConnectionNotice(null);
+      setConnectionError("连接已关闭。");
+    }
+  });
+
   async function ensureWatchListener(connectionId: string) {
     if (unlistenRefs.current.has(connectionId)) return;
     const handler = (event: { payload: WatchEvent }) => {
@@ -418,6 +556,22 @@ export function useWorkbenchState(isReadOnly = false) {
 
     const unlisten = await getCurrentWebviewWindow().listen<CacheEvent>("zk-cache-event", handler);
     cacheUnlistenRefs.current.set(connectionId, () => {
+      void unlisten();
+    });
+  }
+
+  async function ensureSessionListener(connectionId: string) {
+    if (sessionUnlistenRefs.current.has(connectionId)) return;
+    const handler = (event: { payload: SessionEvent }) => {
+      if (event.payload.connectionId !== connectionId) return;
+      void handleSessionEvent(event.payload);
+    };
+
+    const unlisten = await getCurrentWebviewWindow().listen<SessionEvent>(
+      "zk-session-event",
+      handler
+    );
+    sessionUnlistenRefs.current.set(connectionId, () => {
       void unlisten();
     });
   }
@@ -467,22 +621,12 @@ export function useWorkbenchState(isReadOnly = false) {
       await ensureCacheListener(params.connectionId).catch(() => {
         // cache listener setup is best-effort and must not surface as a user-facing connection error
       });
+      await ensureSessionListener(params.connectionId).catch(() => {
+        // session listener setup is best-effort and must not block connect flow
+      });
       void cacheTreeSnapshot(params.connectionId);
 
-      // Background: recursively fetch the full tree so all nodes are searchable,
-      // not just the ones the user has expanded. Runs after UI is already shown.
-      const connId = params.connectionId;
-      setIndexingConnections((prev) => new Set([...prev, connId]));
-      loadFullTreeCmd(connId)
-        .then((allNodes) => nodeSearch.bulkIndex(connId, allNodes))
-        .catch(() => { /* partial index is still useful; silently ignore */ })
-        .finally(() => {
-          setIndexingConnections((prev) => {
-            const next = new Set(prev);
-            next.delete(connId);
-            return next;
-          });
-        });
+      void restartBackgroundIndex(params.connectionId);
     } catch (error) {
       if (connected) {
         cacheSnapshotsRef.current.delete(params.connectionId);
@@ -550,8 +694,11 @@ export function useWorkbenchState(isReadOnly = false) {
     unlistenRefs.current.delete(connectionId);
     cacheUnlistenRefs.current.get(connectionId)?.();
     cacheUnlistenRefs.current.delete(connectionId);
+    sessionUnlistenRefs.current.get(connectionId)?.();
+    sessionUnlistenRefs.current.delete(connectionId);
     cacheSnapshotsRef.current.delete(connectionId);
     pendingChildRefreshRefs.current.delete(connectionId);
+    reconnectingRefs.current.delete(connectionId);
     try {
       await disconnectServerCmd(connectionId);
     } catch {
@@ -649,26 +796,7 @@ export function useWorkbenchState(isReadOnly = false) {
 
   async function doOpenNode(path: string) {
     if (!activeTabId) return;
-    setSaveError(null);
-
-    try {
-      const nodeDetails = await getNodeDetails(activeTabId, path);
-      const currentSession = sessionsRef.current.get(activeTabId);
-      if (!currentSession) return;
-      const nextSession = {
-        ...currentSession,
-        treeNodes: updateNodeHasChildren(
-          currentSession.treeNodes,
-          path,
-          nodeDetails.childrenCount > 0
-        ),
-        activePath: path,
-        activeNode: nodeDetails,
-      };
-      commitSession(activeTabId, nextSession);
-    } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : "节点读取失败");
-    }
+    await openNodeForConnection(activeTabId, path);
   }
 
   async function openNode(path: string) {
