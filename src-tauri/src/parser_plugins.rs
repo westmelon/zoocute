@@ -3,8 +3,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -190,29 +191,37 @@ pub fn run_plugin_with_bytes(
     let stdout_reader = thread::spawn(move || read_pipe(stdout_handle));
     let stderr_reader = thread::spawn(move || read_pipe(stderr_handle));
 
-    let start = Instant::now();
-    let status = loop {
-        match child
-            .try_wait()
-            .map_err(|error| format!("failed to wait for plugin {}: {error}", plugin.manifest.id))?
-        {
-            Some(status) => break status,
-            None if start.elapsed() >= Duration::from_millis(timeout_ms) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_reader(stdout_reader, "stdout")?;
-                let stderr = join_reader(stderr_reader, "stderr")?.trim().to_string();
-                let stderr_suffix = if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {stderr}")
-                };
-                return Err(format!(
-                    "plugin {} timed out after {} ms{}",
-                    plugin.manifest.name, timeout_ms, stderr_suffix
-                ));
-            }
-            None => thread::sleep(Duration::from_millis(10)),
+    // Move child into a wait thread so fast plugins exit without any polling delay.
+    let child_pid = child.id();
+    let (wait_tx, wait_rx) = mpsc::channel::<std::io::Result<std::process::ExitStatus>>();
+    let wait_thread = thread::spawn(move || {
+        let _ = wait_tx.send(child.wait());
+    });
+
+    let status = match wait_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => {
+            let _ = wait_thread.join();
+            return Err(format!("failed to wait for plugin {}: {e}", plugin.manifest.id));
+        }
+        Err(_) => {
+            // Timed out: kill process by PID, then drain the wait thread.
+            #[cfg(unix)]
+            { let _ = Command::new("kill").args(["-9", &child_pid.to_string()]).status(); }
+            #[cfg(windows)]
+            { let _ = Command::new("taskkill").args(["/PID", &child_pid.to_string(), "/F"]).status(); }
+            let _ = wait_thread.join();
+            let _ = join_reader(stdout_reader, "stdout")?;
+            let stderr = join_reader(stderr_reader, "stderr")?.trim().to_string();
+            let stderr_suffix = if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            };
+            return Err(format!(
+                "plugin {} timed out after {} ms{}",
+                plugin.manifest.name, timeout_ms, stderr_suffix
+            ));
         }
     };
 
