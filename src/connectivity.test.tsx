@@ -99,6 +99,7 @@ const AUTH_HINT =
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
   localStorage.clear();
 });
 
@@ -167,45 +168,96 @@ describe("submitConnection", () => {
   });
 
   it("exposes a pending connect state while the connection request is in flight", async () => {
-    let release: (() => void) | null = null;
-    connectServerMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          release = () =>
-            resolve({
-              connected: true,
-              authMode: "digest",
-              authSucceeded: true,
-              message: "connected to 127.0.0.1:2181",
-            });
-        })
-    );
+    vi.useFakeTimers();
+    try {
+      let release: (() => void) | null = null;
+      connectServerMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () =>
+              resolve({
+                connected: true,
+                authMode: "digest",
+                authSucceeded: true,
+                message: "connected to 127.0.0.1:2181",
+              });
+          })
+      );
 
-    const { result } = renderHook(() => useWorkbenchState());
+      const { result } = renderHook(() => useWorkbenchState());
 
-    let pending: Promise<void> | undefined;
-    await act(async () => {
-      pending = result.current.submitConnection({
-        connectionId: "local",
-        connectionString: "127.0.0.1:2181",
-        username: "",
-        password: "",
+      let pending: Promise<void> | undefined;
+      await act(async () => {
+        pending = result.current.submitConnection({
+          connectionId: "local",
+          connectionString: "127.0.0.1:2181",
+          username: "",
+          password: "",
+        });
+        await Promise.resolve();
       });
-      await Promise.resolve();
-    });
 
-    expect(result.current.isConnecting).toBe(true);
-    expect(result.current.connectionAction).toBe("connect");
-    expect(result.current.pendingConnectionId).toBe("local");
+      expect(result.current.isConnecting).toBe(true);
+      expect(result.current.connectionAction).toBe("connect");
+      expect(result.current.pendingConnectionId).toBe("local");
 
-    await act(async () => {
-      release?.();
-      await pending;
-    });
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+        await Promise.resolve();
+      });
 
-    expect(result.current.isConnecting).toBe(false);
-    expect(result.current.connectionAction).toBeNull();
-    expect(result.current.pendingConnectionId).toBeNull();
+      await act(async () => {
+        release?.();
+        await pending;
+      });
+
+      expect(result.current.isConnecting).toBe(false);
+      expect(result.current.connectionAction).toBeNull();
+      expect(result.current.pendingConnectionId).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("yields once before starting a connect request so the waiting UI can paint", async () => {
+    vi.useFakeTimers();
+    try {
+      connectServerMock.mockResolvedValueOnce({
+        connected: true,
+        authMode: "digest",
+        authSucceeded: true,
+        message: "connected to 127.0.0.1:2181",
+      });
+
+      const { result } = renderHook(() => useWorkbenchState());
+
+      let pending: Promise<void> | undefined;
+      await act(async () => {
+        pending = result.current.submitConnection({
+          connectionId: "local",
+          connectionString: "127.0.0.1:2181",
+          username: "",
+          password: "",
+        });
+      });
+
+      expect(result.current.isConnecting).toBe(true);
+      expect(result.current.connectionAction).toBe("connect");
+      expect(connectServerMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+        await Promise.resolve();
+      });
+
+      expect(connectServerMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await pending;
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows an explicit auth hint when the root load is rejected with NoAuth", async () => {
@@ -273,45 +325,96 @@ describe("testConnection", () => {
   });
 
   it("exposes a pending test state while the test request is in flight", async () => {
-    let release: (() => void) | null = null;
-    connectServerMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          release = () =>
-            resolve({
-              connected: true,
-              authMode: "digest",
-              authSucceeded: true,
-              message: "connected to 127.0.0.1:2181",
-            });
-        })
-    );
+    vi.useFakeTimers();
+    try {
+      let release: (() => void) | null = null;
+      connectServerMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () =>
+              resolve({
+                connected: true,
+                authMode: "digest",
+                authSucceeded: true,
+                message: "connected to 127.0.0.1:2181",
+              });
+          })
+      );
 
-    const { result } = renderHook(() => useWorkbenchState());
+      const { result } = renderHook(() => useWorkbenchState());
 
-    let pending: Promise<void> | undefined;
-    await act(async () => {
-      pending = result.current.testConnection({
-        connectionId: "local",
-        connectionString: "127.0.0.1:2181",
-        username: "",
-        password: "",
+      let pending: Promise<void> | undefined;
+      await act(async () => {
+        pending = result.current.testConnection({
+          connectionId: "local",
+          connectionString: "127.0.0.1:2181",
+          username: "",
+          password: "",
+        });
+        await Promise.resolve();
       });
-      await Promise.resolve();
-    });
 
-    expect(result.current.isConnecting).toBe(true);
-    expect(result.current.connectionAction).toBe("test");
-    expect(result.current.pendingConnectionId).toBe("local");
+      expect(result.current.isConnecting).toBe(true);
+      expect(result.current.connectionAction).toBe("test");
+      expect(result.current.pendingConnectionId).toBe("local");
 
-    await act(async () => {
-      release?.();
-      await pending;
-    });
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+        await Promise.resolve();
+      });
 
-    expect(result.current.isConnecting).toBe(false);
-    expect(result.current.connectionAction).toBeNull();
-    expect(result.current.pendingConnectionId).toBeNull();
+      await act(async () => {
+        release?.();
+        await pending;
+      });
+
+      expect(result.current.isConnecting).toBe(false);
+      expect(result.current.connectionAction).toBeNull();
+      expect(result.current.pendingConnectionId).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("yields once before starting a test request so the waiting UI can paint", async () => {
+    vi.useFakeTimers();
+    try {
+      connectServerMock.mockResolvedValueOnce({
+        connected: true,
+        authMode: "digest",
+        authSucceeded: true,
+        message: "connected to 127.0.0.1:2181",
+      });
+
+      const { result } = renderHook(() => useWorkbenchState());
+
+      let pending: Promise<void> | undefined;
+      await act(async () => {
+        pending = result.current.testConnection({
+          connectionId: "local",
+          connectionString: "127.0.0.1:2181",
+          username: "",
+          password: "",
+        });
+      });
+
+      expect(result.current.isConnecting).toBe(true);
+      expect(result.current.connectionAction).toBe("test");
+      expect(connectServerMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.runOnlyPendingTimers();
+        await Promise.resolve();
+      });
+
+      expect(connectServerMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await pending;
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

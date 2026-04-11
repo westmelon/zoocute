@@ -167,6 +167,12 @@ function formatConnectionError(error: unknown): string {
   return message;
 }
 
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, 0);
+  });
+}
+
 type EnsureChildrenResult = {
   children: NodeTreeItem[];
   addedPaths: string[];
@@ -602,6 +608,7 @@ export function useWorkbenchState(isReadOnly = false) {
     setConnectionNotice(null);
     let connected = false;
     try {
+      await yieldToBrowser();
       await connectServer(params.connectionId, {
         connectionString: params.connectionString,
         username: params.username || undefined,
@@ -658,6 +665,7 @@ export function useWorkbenchState(isReadOnly = false) {
     setConnectionError(null);
     setConnectionNotice(null);
     try {
+      await yieldToBrowser();
       await connectServer(params.connectionId, {
         connectionString: params.connectionString,
         username: params.username || undefined,

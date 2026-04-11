@@ -698,8 +698,18 @@ impl Default for AppState {
     }
 }
 
+async fn run_blocking_command<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
-pub fn connect_server(
+pub async fn connect_server(
     connection_id: String,
     request: ConnectRequestDto,
     state: State<'_, AppState>,
@@ -710,8 +720,17 @@ pub fn connect_server(
         .as_ref()
         .cloned()
         .ok_or_else(|| "app handle unavailable".to_string())?;
-    let (adapter, result) =
-        LiveAdapter::connect_live(&connection_id, &request, log_store, app_handle)?;
+    let request_for_connect = request.clone();
+    let connection_id_for_connect = connection_id.clone();
+    let (adapter, result) = run_blocking_command(move || {
+        LiveAdapter::connect_live(
+            &connection_id_for_connect,
+            &request_for_connect,
+            log_store,
+            app_handle,
+        )
+    })
+    .await?;
     let mut sessions = state
         .sessions
         .lock()
@@ -1055,9 +1074,10 @@ fn log_plugin_discovery_warnings(state: &AppState, warnings: &[PluginDiscoveryWa
 
 #[cfg(test)]
 mod tests {
-    use super::{list_parser_plugins_impl, run_parser_plugin_with_loader, AppState};
+    use super::{list_parser_plugins_impl, run_blocking_command, run_parser_plugin_with_loader, AppState};
     use std::fs;
     use std::path::PathBuf;
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -1164,5 +1184,18 @@ mod tests {
         assert_eq!(result.plugin_name, "Echoer");
         assert_eq!(result.content.trim(), "DE-AD-BE-EF");
         assert!(result.generated_at > 0);
+    }
+
+    #[test]
+    fn run_blocking_command_moves_work_off_the_caller_thread() {
+        let caller_thread_id = thread::current().id();
+
+        let worker_thread_id = tauri::async_runtime::block_on(async {
+            run_blocking_command(move || Ok::<_, String>(thread::current().id()))
+                .await
+                .expect("blocking task should succeed")
+        });
+
+        assert_ne!(worker_thread_id, caller_thread_id);
     }
 }
