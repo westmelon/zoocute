@@ -1032,7 +1032,8 @@ impl LiveAdapter {
 }
 
 fn connect_client(request: &ConnectRequestDto) -> Result<Client, String> {
-    let mut connector = Client::connector().with_session_timeout(Duration::from_millis(request.timeout_ms));
+    let mut connector =
+        Client::connector().with_session_timeout(Duration::from_millis(request.timeout_ms));
     if let (Some(username), Some(password)) = (&request.username, &request.password) {
         if !username.is_empty() && !password.is_empty() {
             let auth = format!("{username}:{password}");
@@ -1071,7 +1072,10 @@ fn map_session_state_event(state: SessionState) -> Option<&'static str> {
 }
 
 fn is_terminal_session_state(state: SessionState) -> bool {
-    matches!(state, SessionState::Expired | SessionState::AuthFailed | SessionState::Closed)
+    matches!(
+        state,
+        SessionState::Expired | SessionState::AuthFailed | SessionState::Closed
+    )
 }
 
 fn append_cache_log(log_store: &ZkLogStore, connection_id: &str, operation: &str, path: &str) {
@@ -1367,7 +1371,10 @@ mod tests {
 
     #[test]
     fn session_states_map_to_expected_frontend_events() {
-        assert_eq!(map_session_state_event(SessionState::SyncConnected), Some("connected"));
+        assert_eq!(
+            map_session_state_event(SessionState::SyncConnected),
+            Some("connected")
+        );
         assert_eq!(
             map_session_state_event(SessionState::ConnectedReadOnly),
             Some("connected")
@@ -1376,12 +1383,18 @@ mod tests {
             map_session_state_event(SessionState::Disconnected),
             Some("disconnected")
         );
-        assert_eq!(map_session_state_event(SessionState::Expired), Some("expired"));
+        assert_eq!(
+            map_session_state_event(SessionState::Expired),
+            Some("expired")
+        );
         assert_eq!(
             map_session_state_event(SessionState::AuthFailed),
             Some("auth_failed")
         );
-        assert_eq!(map_session_state_event(SessionState::Closed), Some("closed"));
+        assert_eq!(
+            map_session_state_event(SessionState::Closed),
+            Some("closed")
+        );
     }
 
     #[test]
@@ -1410,18 +1423,18 @@ mod tests {
 
     #[test]
     fn encode_node_value_uses_requested_charset() {
-      assert_eq!(
-          encode_node_value("中文", "GBK").expect("GBK should encode"),
-          vec![0xD6, 0xD0, 0xCE, 0xC4]
-      );
-      assert_eq!(
-          encode_node_value("é", "ISO-8859-1").expect("latin text should encode"),
-          vec![0xE9]
-      );
-      assert_eq!(
-          encode_node_value("hello", "UTF-8").expect("utf8 should encode"),
-          b"hello".to_vec()
-      );
+        assert_eq!(
+            encode_node_value("中文", "GBK").expect("GBK should encode"),
+            vec![0xD6, 0xD0, 0xCE, 0xC4]
+        );
+        assert_eq!(
+            encode_node_value("é", "ISO-8859-1").expect("latin text should encode"),
+            vec![0xE9]
+        );
+        assert_eq!(
+            encode_node_value("hello", "UTF-8").expect("utf8 should encode"),
+            b"hello".to_vec()
+        );
     }
 
     #[test]

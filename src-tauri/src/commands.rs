@@ -752,7 +752,7 @@ pub fn disconnect_server(connection_id: String, state: State<'_, AppState>) -> R
 }
 
 #[tauri::command]
-pub fn list_children(
+pub async fn list_children(
     connection_id: String,
     path: String,
     state: State<'_, AppState>,
@@ -765,13 +765,13 @@ pub fn list_children(
         sessions.get(&connection_id).cloned()
     };
     match adapter {
-        Some(adapter) => adapter.list_children(&path),
+        Some(adapter) => run_blocking_command(move || adapter.list_children(&path)).await,
         None => Err(format!("no active session for connection {connection_id}")),
     }
 }
 
 #[tauri::command]
-pub fn get_node_details(
+pub async fn get_node_details(
     connection_id: String,
     path: String,
     state: State<'_, AppState>,
@@ -784,13 +784,13 @@ pub fn get_node_details(
         sessions.get(&connection_id).cloned()
     };
     match adapter {
-        Some(adapter) => adapter.get_node(&path),
+        Some(adapter) => run_blocking_command(move || adapter.get_node(&path)).await,
         None => Err(format!("no active session for connection {connection_id}")),
     }
 }
 
 #[tauri::command]
-pub fn get_tree_snapshot(
+pub async fn get_tree_snapshot(
     connection_id: String,
     state: State<'_, AppState>,
 ) -> Result<TreeSnapshotDto, String> {
@@ -802,13 +802,13 @@ pub fn get_tree_snapshot(
         sessions.get(&connection_id).cloned()
     };
     match adapter {
-        Some(adapter) => adapter.get_tree_snapshot(),
+        Some(adapter) => run_blocking_command(move || adapter.get_tree_snapshot()).await,
         None => Err(format!("no active session for connection {connection_id}")),
     }
 }
 
 #[tauri::command]
-pub fn save_node(
+pub async fn save_node(
     connection_id: String,
     path: String,
     value: String,
@@ -824,13 +824,15 @@ pub fn save_node(
         sessions.get(&connection_id).cloned()
     };
     match adapter {
-        Some(adapter) => adapter.save_node(&path, &value, &charset),
+        Some(adapter) => {
+            run_blocking_command(move || adapter.save_node(&path, &value, &charset)).await
+        }
         None => Err("写操作需要连接到 ZooKeeper".to_string()),
     }
 }
 
 #[tauri::command]
-pub fn create_node(
+pub async fn create_node(
     connection_id: String,
     path: String,
     data: String,
@@ -845,13 +847,13 @@ pub fn create_node(
         sessions.get(&connection_id).cloned()
     };
     match adapter {
-        Some(adapter) => adapter.create_node(&path, &data),
+        Some(adapter) => run_blocking_command(move || adapter.create_node(&path, &data)).await,
         None => Err("写操作需要连接到 ZooKeeper".to_string()),
     }
 }
 
 #[tauri::command]
-pub fn delete_node(
+pub async fn delete_node(
     connection_id: String,
     path: String,
     recursive: bool,
@@ -866,7 +868,7 @@ pub fn delete_node(
         sessions.get(&connection_id).cloned()
     };
     match adapter {
-        Some(adapter) => adapter.delete_node(&path, recursive),
+        Some(adapter) => run_blocking_command(move || adapter.delete_node(&path, recursive)).await,
         None => Err("写操作需要连接到 ZooKeeper".to_string()),
     }
 }
@@ -875,7 +877,7 @@ pub fn delete_node(
 /// The sessions lock is released before the traversal begins so other
 /// commands are not blocked during what could be a long operation.
 #[tauri::command]
-pub fn load_full_tree(
+pub async fn load_full_tree(
     connection_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<LoadedTreeNodeDto>, String> {
@@ -887,7 +889,7 @@ pub fn load_full_tree(
         sessions.get(&connection_id).cloned()
     };
     match adapter {
-        Some(a) => a.load_full_tree(),
+        Some(adapter) => run_blocking_command(move || adapter.load_full_tree()).await,
         None => Err(format!("no active session for connection {connection_id}")),
     }
 }

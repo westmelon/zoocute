@@ -1,10 +1,26 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { describe, it, expect, expectTypeOf, vi } from "vitest";
+import { beforeEach, describe, it, expect, expectTypeOf, vi } from "vitest";
 import { useWorkbenchState } from "./hooks/use-workbench-state";
 import * as commands from "./lib/commands";
 import type { ParserPlugin, ParserPluginResult, SavedConnection } from "./lib/types";
 
-const { getNodeDetailsMock } = vi.hoisted(() => ({
+const {
+  connectServerMock,
+  disconnectServerMock,
+  listChildrenMock,
+  getNodeDetailsMock,
+} = vi.hoisted(() => ({
+  connectServerMock: vi.fn(async () => ({
+    connected: true,
+    authMode: "anonymous",
+    authSucceeded: true,
+    message: "",
+  })),
+  disconnectServerMock: vi.fn(async () => {}),
+  listChildrenMock: vi.fn(async (_id: string, path: string) => {
+    if (path === "/") return [{ path: "/configs", name: "configs", hasChildren: false }];
+    return [];
+  }),
   getNodeDetailsMock: vi.fn(async (_connectionId: string, path: string) => ({
     path,
     value: "test",
@@ -28,8 +44,8 @@ const { getNodeDetailsMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("./lib/commands", () => ({
-  connectServer: vi.fn(async () => ({ connected: true, authMode: "anonymous", authSucceeded: true, message: "" })),
-  disconnectServer: vi.fn(async () => {}),
+  connectServer: connectServerMock,
+  disconnectServer: disconnectServerMock,
   loadPersistedConnections: vi.fn(async () => ({
     connections: {
       savedConnections: [
@@ -40,10 +56,7 @@ vi.mock("./lib/commands", () => ({
     status: { kind: "loaded", message: null },
   })),
   savePersistedConnections: vi.fn(async (payload) => payload),
-  listChildren: vi.fn(async (_id: string, path: string) => {
-    if (path === "/") return [{ path: "/configs", name: "configs", hasChildren: false }];
-    return [];
-  }),
+  listChildren: listChildrenMock,
   getNodeDetails: getNodeDetailsMock,
   saveNode: vi.fn(async () => {}),
   createNode: vi.fn(async () => {}),
@@ -126,6 +139,45 @@ describe("openNode", () => {
     });
     expect(result.current.activePath).toBeNull();
   });
+
+  it("reconnects and retries when opening a node times out after resume", async () => {
+    getNodeDetailsMock
+      .mockRejectedValueOnce(new Error("Timeout"))
+      .mockResolvedValueOnce({
+        path: "/configs",
+        value: "test",
+        dataKind: "text",
+        displayModeLabel: "文本 · 可编辑",
+        editable: true,
+        rawPreview: "",
+        decodedPreview: "",
+        version: 1,
+        childrenCount: 0,
+        updatedAt: "",
+        cVersion: 0,
+        aclVersion: 0,
+        cZxid: null,
+        mZxid: null,
+        cTime: 0,
+        mTime: 0,
+        dataLength: 4,
+        ephemeral: false,
+      });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await result.current.openNode("/configs");
+    });
+
+    await waitFor(() => {
+      expect(result.current.activePath).toBe("/configs");
+      expect(result.current.activeNode?.path).toBe("/configs");
+    });
+
+    expect(connectServerMock).toHaveBeenCalledTimes(2);
+    expect(disconnectServerMock).toHaveBeenCalledWith("c1");
+  });
 });
 
 describe("draft management", () => {
@@ -141,6 +193,39 @@ describe("draft management", () => {
       result.current.discardDraft("/configs");
     });
     expect(result.current.drafts["/configs"]).toBeUndefined();
+  });
+});
+
+describe("toggleNode", () => {
+  it("reconnects and retries loading children when expansion times out after resume", async () => {
+    let configLoadAttempts = 0;
+    listChildrenMock.mockImplementation(async (_id: string, path: string) => {
+      if (path === "/") {
+        return [{ path: "/configs", name: "configs", hasChildren: true }];
+      }
+      if (path === "/configs") {
+        configLoadAttempts += 1;
+        if (configLoadAttempts === 1) {
+          throw new Error("Timeout");
+        }
+        return [{ path: "/configs/feature", name: "feature", hasChildren: false }];
+      }
+      return [];
+    });
+
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await result.current.toggleNode("/configs");
+    });
+
+    await waitFor(() => {
+      const configs = result.current.treeNodes.find((node) => node.path === "/configs");
+      expect(configs?.children?.[0]?.path).toBe("/configs/feature");
+    });
+
+    expect(connectServerMock).toHaveBeenCalledTimes(2);
+    expect(disconnectServerMock).toHaveBeenCalledWith("c1");
   });
 });
 

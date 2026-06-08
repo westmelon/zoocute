@@ -164,14 +164,12 @@ pub fn run_plugin_with_bytes(
         .stderr(Stdio::piped());
     configure_plugin_command(&mut command);
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "failed to start plugin {} ({}): {error}",
-                plugin.manifest.name, plugin.manifest.id
-            )
-        })?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "failed to start plugin {} ({}): {error}",
+            plugin.manifest.name, plugin.manifest.id
+        )
+    })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -202,14 +200,25 @@ pub fn run_plugin_with_bytes(
         Ok(Ok(status)) => status,
         Ok(Err(e)) => {
             let _ = wait_thread.join();
-            return Err(format!("failed to wait for plugin {}: {e}", plugin.manifest.id));
+            return Err(format!(
+                "failed to wait for plugin {}: {e}",
+                plugin.manifest.id
+            ));
         }
         Err(_) => {
             // Timed out: kill process by PID, then drain the wait thread.
             #[cfg(unix)]
-            { let _ = Command::new("kill").args(["-9", &child_pid.to_string()]).status(); }
+            {
+                let _ = Command::new("kill")
+                    .args(["-9", &child_pid.to_string()])
+                    .status();
+            }
             #[cfg(windows)]
-            { let _ = Command::new("taskkill").args(["/PID", &child_pid.to_string(), "/F"]).status(); }
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &child_pid.to_string(), "/F"])
+                    .status();
+            }
             let _ = wait_thread.join();
             let _ = join_reader(stdout_reader, "stdout")?;
             let stderr = join_reader(stderr_reader, "stderr")?.trim().to_string();

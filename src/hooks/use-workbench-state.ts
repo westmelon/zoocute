@@ -167,6 +167,16 @@ function formatConnectionError(error: unknown): string {
   return message;
 }
 
+function isRecoverableConnectionError(error: unknown): boolean {
+  const message = extractErrorMessage(error);
+  return (
+    message === "Timeout" ||
+    message === "ConnectionLoss" ||
+    message === "SessionExpired" ||
+    message === "ClientClosed"
+  );
+}
+
 function yieldToBrowser(): Promise<void> {
   return new Promise((resolve) => {
     globalThis.setTimeout(resolve, 0);
@@ -265,6 +275,7 @@ export function useWorkbenchState(isReadOnly = false) {
   const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
   const cacheSnapshotsRef = useRef<Map<string, TreeSnapshot>>(new Map());
   const reconnectingRefs = useRef<Set<string>>(new Set());
+  const reconnectPromisesRef = useRef<Map<string, Promise<void>>>(new Map());
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
@@ -404,7 +415,14 @@ export function useWorkbenchState(isReadOnly = false) {
     setSaveError(null);
 
     try {
-      const nodeDetails = await getNodeDetails(connectionId, path);
+      let nodeDetails;
+      try {
+        nodeDetails = await getNodeDetails(connectionId, path);
+      } catch (error) {
+        if (!isRecoverableConnectionError(error)) throw error;
+        await reconnectSession(connectionId);
+        nodeDetails = await getNodeDetails(connectionId, path);
+      }
       const currentSession = sessionsRef.current.get(connectionId);
       if (!currentSession) return;
       const nextSession = {
@@ -419,7 +437,7 @@ export function useWorkbenchState(isReadOnly = false) {
       };
       commitSession(connectionId, nextSession);
     } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : "节点读取失败");
+      setConnectionError(formatConnectionError(error));
     }
   });
 
@@ -456,44 +474,56 @@ export function useWorkbenchState(isReadOnly = false) {
   }
 
   const reconnectSession = useEffectEvent(async (connectionId: string) => {
-    if (reconnectingRefs.current.has(connectionId)) return;
     const session = sessionsRef.current.get(connectionId);
     if (!session) return;
 
-    reconnectingRefs.current.add(connectionId);
-    setConnectionError(null);
-    setConnectionNotice("连接已失效，正在重新连接…");
-    try {
-      await disconnectServerCmd(connectionId).catch(() => {
-        // best-effort cleanup before re-establishing a fresh session
-      });
-      await connectServer(connectionId, {
-        connectionString: session.connection.connectionString,
-        username: session.connection.username || undefined,
-        password: session.connection.password || undefined,
-      });
-      const rootNodes = await listChildren(connectionId, "/");
-      const latestSession = sessionsRef.current.get(connectionId) ?? session;
-      const nextSession: ActiveSession = {
-        ...latestSession,
-        connection: latestSession.connection,
-        treeNodes: rootNodes,
-        loadingPaths: new Set(),
-        activeNode: null,
-      };
-      commitSession(connectionId, nextSession);
-      nodeSearch.clearSession(connectionId);
-      nodeSearch.indexNodes(connectionId, "/", rootNodes);
-      cacheSnapshotsRef.current.delete(connectionId);
-      void cacheTreeSnapshot(connectionId);
-      await restoreSessionView(connectionId, latestSession);
-      void restartBackgroundIndex(connectionId);
-      setConnectionNotice("连接已恢复");
-    } catch (error) {
-      setConnectionError(formatConnectionError(error));
-    } finally {
-      reconnectingRefs.current.delete(connectionId);
+    const existingReconnect = reconnectPromisesRef.current.get(connectionId);
+    if (existingReconnect) {
+      await existingReconnect;
+      return;
     }
+
+    const reconnectPromise = (async () => {
+      reconnectingRefs.current.add(connectionId);
+      setConnectionError(null);
+      setConnectionNotice("连接已失效，正在重新连接…");
+      try {
+        await disconnectServerCmd(connectionId).catch(() => {
+          // best-effort cleanup before re-establishing a fresh session
+        });
+        await connectServer(connectionId, {
+          connectionString: session.connection.connectionString,
+          username: session.connection.username || undefined,
+          password: session.connection.password || undefined,
+        });
+        const rootNodes = await listChildren(connectionId, "/");
+        const latestSession = sessionsRef.current.get(connectionId) ?? session;
+        const nextSession: ActiveSession = {
+          ...latestSession,
+          connection: latestSession.connection,
+          treeNodes: rootNodes,
+          loadingPaths: new Set(),
+          activeNode: null,
+        };
+        commitSession(connectionId, nextSession);
+        nodeSearch.clearSession(connectionId);
+        nodeSearch.indexNodes(connectionId, "/", rootNodes);
+        cacheSnapshotsRef.current.delete(connectionId);
+        void cacheTreeSnapshot(connectionId);
+        await restoreSessionView(connectionId, latestSession);
+        void restartBackgroundIndex(connectionId);
+        setConnectionNotice("连接已恢复");
+      } catch (error) {
+        setConnectionError(formatConnectionError(error));
+        throw error;
+      } finally {
+        reconnectingRefs.current.delete(connectionId);
+        reconnectPromisesRef.current.delete(connectionId);
+      }
+    })();
+
+    reconnectPromisesRef.current.set(connectionId, reconnectPromise);
+    await reconnectPromise;
   });
 
   const handleSessionEvent = useEffectEvent(async (event: SessionEvent) => {
@@ -745,7 +775,14 @@ export function useWorkbenchState(isReadOnly = false) {
     }));
 
     try {
-      const children = await listChildren(connectionId, path);
+      let children;
+      try {
+        children = await listChildren(connectionId, path);
+      } catch (error) {
+        if (!isRecoverableConnectionError(error)) throw error;
+        await reconnectSession(connectionId);
+        children = await listChildren(connectionId, path);
+      }
       const current = sessionsRef.current.get(connectionId);
       if (!current) return undefined;
       const knownExpandablePaths = new Set(
@@ -799,7 +836,7 @@ export function useWorkbenchState(isReadOnly = false) {
         await ensureChildrenLoaded(connectionId, getParentPath(path), { force: true });
         return undefined;
       }
-      setConnectionError(error instanceof Error ? error.message : "节点读取失败");
+      setConnectionError(formatConnectionError(error));
       return undefined;
     }
   }
