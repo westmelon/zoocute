@@ -1,35 +1,37 @@
-import type { CachedNode, NodeTreeItem, SearchResult } from "./types";
+import type { CachedNode, CachedTreeNode, NodeTreeItem, SearchResult } from "./types";
 
 export class PathSearchIndex {
   private byPath = new Map<string, CachedNode>();
+  private childrenByParent = new Map<string, Set<string>>();
 
   insert(node: CachedNode): void {
+    this.removeFromParentIndex(node.path);
     this.byPath.set(node.path, node);
+    this.addToParentIndex(node);
   }
 
   insertMany(nodes: CachedNode[]): void {
     for (const node of nodes) {
-      this.byPath.set(node.path, node);
+      this.insert(node);
+    }
+  }
+
+  upsertCachedNodes(nodes: CachedTreeNode[]): void {
+    for (const node of nodes) {
+      this.insert(toCachedNodeFromSnapshot(node));
     }
   }
 
   childPaths(parentPath: string): string[] {
-    const childPaths: string[] = [];
-    for (const node of this.byPath.values()) {
-      if (node.parentPath === parentPath) {
-        childPaths.push(node.path);
-      }
-    }
-    return childPaths;
+    return [...(this.childrenByParent.get(parentPath) ?? [])];
   }
 
   /** Remove all direct children of `parentPath`. Used before re-indexing after a refresh. */
   removeChildren(parentPath: string): void {
-    for (const [path, node] of this.byPath) {
-      if (node.parentPath === parentPath) {
-        this.byPath.delete(path);
-      }
+    for (const path of this.childPaths(parentPath)) {
+      this.removeSubtree(path);
     }
+    this.childrenByParent.delete(parentPath);
   }
 
   /** Remove `path` and all its descendants. Used after a recursive delete. */
@@ -37,7 +39,7 @@ export class PathSearchIndex {
     const prefix = path + "/";
     for (const key of this.byPath.keys()) {
       if (key === path || key.startsWith(prefix)) {
-        this.byPath.delete(key);
+        this.deleteNode(key);
       }
     }
   }
@@ -62,6 +64,35 @@ export class PathSearchIndex {
 
   clear(): void {
     this.byPath.clear();
+    this.childrenByParent.clear();
+  }
+
+  size(): number {
+    return this.byPath.size;
+  }
+
+  private deleteNode(path: string): void {
+    this.removeFromParentIndex(path);
+    this.childrenByParent.delete(path);
+    this.byPath.delete(path);
+  }
+
+  private addToParentIndex(node: CachedNode): void {
+    if (!node.parentPath) return;
+    const siblings = this.childrenByParent.get(node.parentPath) ?? new Set<string>();
+    siblings.add(node.path);
+    this.childrenByParent.set(node.parentPath, siblings);
+  }
+
+  private removeFromParentIndex(path: string): void {
+    const existing = this.byPath.get(path);
+    if (!existing?.parentPath) return;
+    const siblings = this.childrenByParent.get(existing.parentPath);
+    if (!siblings) return;
+    siblings.delete(path);
+    if (siblings.size === 0) {
+      this.childrenByParent.delete(existing.parentPath);
+    }
   }
 }
 
@@ -88,6 +119,16 @@ export function toCachedNode(item: NodeTreeItem, parentPath: string): CachedNode
     name: item.name,
     parentPath,
     hasChildren: item.hasChildren ?? false,
+    hasLoadedChildren: false,
+  };
+}
+
+export function toCachedNodeFromSnapshot(item: CachedTreeNode): CachedNode {
+  return {
+    path: item.path,
+    name: item.name,
+    parentPath: item.parentPath,
+    hasChildren: item.hasChildren,
     hasLoadedChildren: false,
   };
 }

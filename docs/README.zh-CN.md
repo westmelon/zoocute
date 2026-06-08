@@ -4,6 +4,7 @@ Zoocute 是一个基于 Tauri、Rust、React 和 TypeScript 构建的 ZooKeeper 
 
 英文版开发说明见 [README.md](../README.md)。  
 用户文档见 [USER_GUIDE.md](../USER_GUIDE.md) 和 [docs/USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md)。
+架构与实现细节见 [docs/ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。
 
 ## 功能概览
 

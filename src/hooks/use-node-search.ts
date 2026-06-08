@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { PathSearchIndex, toCachedNode } from "../lib/path-search-index";
-import type { NodeTreeItem, SearchResult, SearchMode } from "../lib/types";
+import type { CachedTreeNode, NodeTreeItem, SearchResult, SearchMode } from "../lib/types";
 
 function getParentPath(path: string): string {
   const lastSlash = path.lastIndexOf("/");
@@ -12,6 +12,7 @@ export function useNodeSearch(activeTabId: string | null) {
   const indexes = useRef<Map<string, PathSearchIndex>>(new Map());
   // Per-session search queries — stored in state so changes trigger re-renders.
   const [queryMap, setQueryMap] = useState<Record<string, string>>({});
+  const [indexVersion, setIndexVersion] = useState(0);
 
   function getOrCreate(connectionId: string): PathSearchIndex {
     let idx = indexes.current.get(connectionId);
@@ -40,6 +41,7 @@ export function useNodeSearch(activeTabId: string | null) {
     }
     idx.removeChildren(parentPath);
     idx.insertMany(nodes.map((n) => toCachedNode(n, parentPath)));
+    setIndexVersion((version) => version + 1);
   }
 
   /**
@@ -48,6 +50,7 @@ export function useNodeSearch(activeTabId: string | null) {
    */
   function removeSubtree(connectionId: string, path: string): void {
     indexes.current.get(connectionId)?.removeSubtree(path);
+    setIndexVersion((version) => version + 1);
   }
 
   /**
@@ -61,6 +64,13 @@ export function useNodeSearch(activeTabId: string | null) {
       const parentPath = getParentPath(node.path);
       idx.insert(toCachedNode(node, parentPath));
     }
+    setIndexVersion((version) => version + 1);
+  }
+
+  function upsertCachedNodes(connectionId: string, nodes: CachedTreeNode[]): void {
+    if (!nodes.length) return;
+    getOrCreate(connectionId).upsertCachedNodes(nodes);
+    setIndexVersion((version) => version + 1);
   }
 
   /**
@@ -72,6 +82,16 @@ export function useNodeSearch(activeTabId: string | null) {
     patch: { hasChildren?: boolean }
   ): void {
     indexes.current.get(connectionId)?.patchNodeMeta(path, patch);
+    setIndexVersion((version) => version + 1);
+  }
+
+  function clearIndex(connectionId: string): void {
+    indexes.current.get(connectionId)?.clear();
+    setIndexVersion((version) => version + 1);
+  }
+
+  function indexSize(connectionId: string): number {
+    return indexes.current.get(connectionId)?.size() ?? 0;
   }
 
   /** Drop all cached data for a session on disconnect. */
@@ -83,10 +103,12 @@ export function useNodeSearch(activeTabId: string | null) {
       delete next[connectionId];
       return next;
     });
+    setIndexVersion((version) => version + 1);
   }
 
   const searchQuery = (activeTabId ? (queryMap[activeTabId] ?? "") : "");
   const searchMode: SearchMode = searchQuery.trim() ? "results" : "tree";
+  void indexVersion;
   const searchResults: SearchResult[] =
     searchMode === "results" && activeTabId
       ? (indexes.current.get(activeTabId)?.search(searchQuery) ?? [])
@@ -101,8 +123,11 @@ export function useNodeSearch(activeTabId: string | null) {
   return {
     indexNodes,
     bulkIndex,
+    upsertCachedNodes,
     removeSubtree,
     patchNodeMeta,
+    clearIndex,
+    indexSize,
     clearSession,
     searchQuery,
     setSearchQuery,

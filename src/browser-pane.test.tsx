@@ -19,6 +19,7 @@ const defaultProps = {
   searchMode: "tree" as const,
   onLocate: vi.fn(),
   isIndexing: false,
+  indexedNodeCount: 0,
 };
 
 describe("BrowserPane", () => {

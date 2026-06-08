@@ -188,6 +188,15 @@ export interface CacheEvent {
   paths: string[];
 }
 
+export interface IndexEvent {
+  connectionId: string;
+  runId: string;
+  eventType: "started" | "batch" | "completed" | "failed" | "cancelled";
+  indexedCount: number;
+  nodes: CachedTreeNode[];
+  error: string | null;
+}
+
 export interface ActiveSession {
   connection: SavedConnection;
   treeNodes: NodeTreeItem[];

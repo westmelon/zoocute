@@ -87,6 +87,17 @@ pub struct CacheEventDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct IndexEventDto {
+    pub connection_id: String,
+    pub run_id: String,
+    pub event_type: String,
+    pub indexed_count: usize,
+    pub nodes: Vec<CachedTreeNodeDto>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoadedTreeNodeDto {
     pub path: String,
     pub name: String,

@@ -61,7 +61,7 @@ export default function App() {
     isConnecting, connectionAction, pendingConnectionId,
     savedConnections, setSavedConnections,
     selectedConnectionId, setSelectedConnectionId,
-    searchQuery, setSearchQuery, searchResults, searchMode, locate, isIndexing,
+    searchQuery, setSearchQuery, searchResults, searchMode, locate, isIndexing, indexedNodeCount,
   } = useWorkbenchState(isReadOnly);
 
   const { width: sidebarWidth, onMouseDown: onResizeMouseDown } = usePanelResize(
@@ -195,6 +195,7 @@ export default function App() {
             searchMode={searchMode}
             onLocate={locate}
             isIndexing={isIndexing}
+            indexedNodeCount={indexedNodeCount}
             onContextMenu={(path, event) => {
               const node = treeNodes
                 .flatMap(function flatten(current): typeof treeNodes {

@@ -4,6 +4,7 @@ import { useWorkbenchState } from "./hooks/use-workbench-state";
 import { buildProjectedTree } from "./hooks/use-tree-projection";
 import type {
   CacheEvent,
+  IndexEvent,
   NodeTreeItem,
   SavedConnection,
   SessionEvent,
@@ -13,6 +14,7 @@ import type {
 
 type WatchHandler = (event: { payload: WatchEvent }) => void;
 type CacheHandler = (event: { payload: CacheEvent }) => void;
+type IndexHandler = (event: { payload: IndexEvent }) => void;
 type SessionHandler = (event: { payload: SessionEvent }) => void;
 
 const {
@@ -27,6 +29,7 @@ const {
   unlistenMock,
   emitWatchEvent,
   emitCacheEvent,
+  emitIndexEvent,
   emitSessionEvent,
 } = vi.hoisted(() => {
   const unlistenMock = vi.fn();
@@ -140,7 +143,7 @@ const {
       generatedAt: 0,
     })),
     webviewListenMock: vi.fn(
-      async (_eventName: string, cb: WatchHandler | CacheHandler | SessionHandler) => {
+      async (_eventName: string, cb: WatchHandler | CacheHandler | IndexHandler | SessionHandler) => {
       handlers.set(_eventName, cb);
       return unlistenMock;
     }),
@@ -159,6 +162,10 @@ const {
       (handlers.get("zk-cache-event") as CacheHandler | undefined)?.({
         payload: payload as CacheEvent,
       });
+      await Promise.resolve();
+    },
+    emitIndexEvent: async (payload: IndexEvent) => {
+      (handlers.get("zk-index-event") as IndexHandler | undefined)?.({ payload });
       await Promise.resolve();
     },
     emitSessionEvent: async (payload: SessionEvent) => {
@@ -259,13 +266,209 @@ describe("watch events", () => {
 
     expect(webviewListenMock).toHaveBeenCalledWith("zk-watch-event", expect.any(Function));
     expect(webviewListenMock).toHaveBeenCalledWith("zk-cache-event", expect.any(Function));
+    expect(webviewListenMock).toHaveBeenCalledWith("zk-index-event", expect.any(Function));
     expect(webviewListenMock).toHaveBeenCalledWith("zk-session-event", expect.any(Function));
 
     await act(async () => {
       await result.current.disconnectSession("c1");
     });
 
-    expect(unlistenMock).toHaveBeenCalledTimes(3);
+    expect(unlistenMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not start the legacy full-tree search index after connect", async () => {
+    await connectAndGet();
+
+    expect(loadFullTreeMock).not.toHaveBeenCalled();
+  });
+
+  it("clears the previous search index when streaming index starts", async () => {
+    const { result } = await connectAndGet();
+
+    act(() => {
+      result.current.setSearchQuery("configs");
+    });
+    expect(result.current.searchResults.map((node) => node.path)).toEqual(["/configs"]);
+
+    await act(async () => {
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "started",
+        indexedCount: 0,
+        nodes: [],
+        error: null,
+      });
+    });
+
+    expect(result.current.isIndexing).toBe(true);
+    expect(result.current.indexedNodeCount).toBe(0);
+    expect(result.current.searchResults).toEqual([]);
+  });
+
+  it("indexes streamed batches without expanding nodes", async () => {
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "started",
+        indexedCount: 0,
+        nodes: [],
+        error: null,
+      });
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "batch",
+        indexedCount: 1,
+        nodes: [
+          {
+            path: "/stream/feature-stream",
+            name: "feature-stream",
+            parentPath: "/stream",
+            hasChildren: false,
+          },
+        ],
+        error: null,
+      });
+    });
+
+    act(() => {
+      result.current.setSearchQuery("feature-stream");
+    });
+
+    expect(result.current.searchResults.map((node) => node.path)).toEqual([
+      "/stream/feature-stream",
+    ]);
+    expect(result.current.indexedNodeCount).toBe(1);
+  });
+
+  it("accumulates search results from multiple streamed batches", async () => {
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "started",
+        indexedCount: 0,
+        nodes: [],
+        error: null,
+      });
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "batch",
+        indexedCount: 1,
+        nodes: [{ path: "/a/feature-one", name: "feature-one", parentPath: "/a", hasChildren: false }],
+        error: null,
+      });
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "batch",
+        indexedCount: 2,
+        nodes: [{ path: "/b/feature-two", name: "feature-two", parentPath: "/b", hasChildren: false }],
+        error: null,
+      });
+    });
+
+    act(() => {
+      result.current.setSearchQuery("feature");
+    });
+
+    expect(result.current.searchResults.map((node) => node.path).sort()).toEqual([
+      "/a/feature-one",
+      "/b/feature-two",
+    ]);
+    expect(result.current.indexedNodeCount).toBe(2);
+  });
+
+  it("ignores stale streaming index runs", async () => {
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "started",
+        indexedCount: 0,
+        nodes: [],
+        error: null,
+      });
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-b",
+        eventType: "batch",
+        indexedCount: 1,
+        nodes: [{ path: "/stale", name: "stale", parentPath: "/", hasChildren: false }],
+        error: null,
+      });
+    });
+
+    act(() => {
+      result.current.setSearchQuery("stale");
+    });
+
+    expect(result.current.searchResults).toEqual([]);
+  });
+
+  it("ends indexing when the active streaming run completes", async () => {
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "started",
+        indexedCount: 0,
+        nodes: [],
+        error: null,
+      });
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "completed",
+        indexedCount: 12,
+        nodes: [],
+        error: null,
+      });
+    });
+
+    expect(result.current.isIndexing).toBe(false);
+    expect(result.current.indexedNodeCount).toBe(12);
+  });
+
+  it("restores loaded nodes to search when streaming index fails before any batch", async () => {
+    const { result } = await connectAndGet();
+
+    await act(async () => {
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "started",
+        indexedCount: 0,
+        nodes: [],
+        error: null,
+      });
+      await emitIndexEvent({
+        connectionId: "c1",
+        runId: "run-a",
+        eventType: "failed",
+        indexedCount: 0,
+        nodes: [],
+        error: "ConnectionLoss",
+      });
+    });
+
+    act(() => {
+      result.current.setSearchQuery("configs");
+    });
+
+    expect(result.current.isIndexing).toBe(false);
+    expect(result.current.searchResults.map((node) => node.path)).toEqual(["/configs"]);
   });
 
   it("auto reconnects and restores the active node after a session expires", async () => {

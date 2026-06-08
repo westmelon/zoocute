@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -8,8 +8,8 @@ use tauri::{async_runtime, AppHandle, Emitter, Wry};
 use zookeeper_client::{Acls, Client, CreateMode, EventType, OneshotWatcher, WatchedEvent};
 
 use crate::domain::{
-    CacheEventDto, ConnectRequestDto, ConnectionStatusDto, LoadedTreeNodeDto, NodeDetailsDto,
-    SessionEventDto, TreeSnapshotDto, WatchEventDto, ZkLogEntry,
+    CacheEventDto, CachedTreeNodeDto, ConnectRequestDto, ConnectionStatusDto, IndexEventDto,
+    LoadedTreeNodeDto, NodeDetailsDto, SessionEventDto, TreeSnapshotDto, WatchEventDto, ZkLogEntry,
 };
 use crate::logging::ZkLogStore;
 use crate::zk_core::adapter::ReadOnlyZkAdapter;
@@ -17,6 +17,9 @@ use crate::zk_core::cache::{CacheStatus, ConnectionCache, NodeRecord};
 use crate::zk_core::interpreter::{hex_encode, interpret_data};
 use crate::zk_core::types::AuthMode;
 use zookeeper_client::SessionState;
+
+const INDEX_BATCH_SIZE: usize = 500;
+static INDEX_RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct LiveAdapter {
@@ -108,6 +111,31 @@ fn emit_cache_event(
     );
 }
 
+fn emit_index_event(
+    app_handle: &AppHandle<Wry>,
+    connection_id: &str,
+    run_id: &str,
+    event_type: &str,
+    indexed_count: usize,
+    nodes: Vec<CachedTreeNodeDto>,
+    error: Option<String>,
+) {
+    let Some(event_type) = map_index_event_type(event_type) else {
+        return;
+    };
+    let _ = app_handle.emit(
+        "zk-index-event",
+        IndexEventDto {
+            connection_id: connection_id.to_string(),
+            run_id: run_id.to_string(),
+            event_type: event_type.to_string(),
+            indexed_count,
+            nodes,
+            error,
+        },
+    );
+}
+
 fn snapshot_ready_cache_event(connection_id: &str) -> CacheEventDto {
     CacheEventDto {
         connection_id: connection_id.to_string(),
@@ -115,6 +143,11 @@ fn snapshot_ready_cache_event(connection_id: &str) -> CacheEventDto {
         parent_path: None,
         paths: Vec::new(),
     }
+}
+
+fn next_index_run_id(connection_id: &str) -> String {
+    let id = INDEX_RUN_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("{connection_id}-{id}")
 }
 
 fn append_watch_log(
@@ -521,14 +554,50 @@ impl LiveAdapter {
                 return;
             };
             append_cache_log(&log_store, &connection_id, "cache_bootstrap_started", "/");
-            match collect_full_tree_records(client.as_ref()) {
+            let run_id = next_index_run_id(&connection_id);
+            emit_index_event(
+                &app_handle,
+                &connection_id,
+                &run_id,
+                "started",
+                0,
+                Vec::new(),
+                None,
+            );
+            match collect_full_tree_records_streaming(
+                client.as_ref(),
+                &app_handle,
+                &connection_id,
+                &run_id,
+                &shutdown,
+            ) {
                 Ok(nodes) => {
                     if is_shutdown(&shutdown) {
+                        emit_index_event(
+                            &app_handle,
+                            &connection_id,
+                            &run_id,
+                            "cancelled",
+                            nodes.len(),
+                            Vec::new(),
+                            None,
+                        );
                         return;
                     }
+                    let node_count = nodes.len();
                     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
                     guard.replace_all(nodes);
                     guard.mark_live();
+                    drop(guard);
+                    emit_index_event(
+                        &app_handle,
+                        &connection_id,
+                        &run_id,
+                        "completed",
+                        node_count,
+                        Vec::new(),
+                        None,
+                    );
                     append_cache_resync_log(
                         &log_store,
                         &connection_id,
@@ -545,9 +614,33 @@ impl LiveAdapter {
                         event.paths,
                     );
                 }
-                Err(error) => {
+                Err(IndexCollectError::Cancelled { indexed_count }) => {
+                    emit_index_event(
+                        &app_handle,
+                        &connection_id,
+                        &run_id,
+                        "cancelled",
+                        indexed_count,
+                        Vec::new(),
+                        None,
+                    );
+                }
+                Err(IndexCollectError::Failed {
+                    error,
+                    indexed_count,
+                }) => {
                     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
                     guard.set_status(CacheStatus::Stale);
+                    drop(guard);
+                    emit_index_event(
+                        &app_handle,
+                        &connection_id,
+                        &run_id,
+                        "failed",
+                        indexed_count,
+                        Vec::new(),
+                        Some(error.clone()),
+                    );
                     append_cache_resync_error_log(
                         &log_store,
                         &connection_id,
@@ -1152,35 +1245,114 @@ fn mark_cache_resyncing(cache: &Arc<std::sync::Mutex<ConnectionCache>>) {
     guard.mark_resyncing();
 }
 
-fn collect_full_tree_records(client: &Client) -> Result<Vec<NodeRecord>, String> {
-    let mut nodes = Vec::new();
-    let (children, _) = async_runtime::block_on(client.get_children("/")).map_err(map_zk_error)?;
-    for name in children {
-        let child_path = format!("/{name}");
-        collect_node_records(client, &child_path, name, "/", &mut nodes)?;
-    }
-    Ok(nodes)
+#[derive(Debug, PartialEq, Eq)]
+enum IndexCollectError {
+    Cancelled { indexed_count: usize },
+    Failed { error: String, indexed_count: usize },
 }
 
-fn collect_node_records(
+fn collect_full_tree_records_streaming(
     client: &Client,
-    path: &str,
-    name: String,
-    parent_path: &str,
-    result: &mut Vec<NodeRecord>,
-) -> Result<(), String> {
-    let (children, _) = async_runtime::block_on(client.get_children(path)).map_err(map_zk_error)?;
-    result.push(NodeRecord::new(
-        path,
-        &name,
-        Some(parent_path.to_string()),
-        !children.is_empty(),
-    ));
-    for child_name in children {
-        let child_path = format!("{path}/{child_name}");
-        collect_node_records(client, &child_path, child_name, path, result)?;
+    app_handle: &AppHandle<Wry>,
+    connection_id: &str,
+    run_id: &str,
+    shutdown: &Arc<AtomicBool>,
+) -> Result<Vec<NodeRecord>, IndexCollectError> {
+    let mut records = Vec::new();
+    let mut batch = Vec::new();
+    let mut indexed_count = 0;
+    let (children, _) = async_runtime::block_on(client.get_children("/")).map_err(|error| {
+        IndexCollectError::Failed {
+            error: map_zk_error(error),
+            indexed_count,
+        }
+    })?;
+    let mut stack = children
+        .into_iter()
+        .rev()
+        .map(|name| (format!("/{name}"), name, "/".to_string()))
+        .collect::<Vec<_>>();
+
+    while let Some((path, name, parent_path)) = stack.pop() {
+        if let Some(error) = cancelled_index_error(shutdown, indexed_count) {
+            return Err(error);
+        }
+        let (children, _) =
+            async_runtime::block_on(client.get_children(&path)).map_err(|error| {
+                IndexCollectError::Failed {
+                    error: map_zk_error(error),
+                    indexed_count,
+                }
+            })?;
+        let record = NodeRecord::new(
+            &path,
+            &name,
+            Some(parent_path.clone()),
+            !children.is_empty(),
+        );
+        batch.push(node_record_to_cached_tree_node(&record));
+        records.push(record);
+        indexed_count += 1;
+        if let Some(nodes) = take_full_index_batch(&mut batch, INDEX_BATCH_SIZE) {
+            emit_index_event(
+                app_handle,
+                connection_id,
+                run_id,
+                "batch",
+                indexed_count,
+                nodes,
+                None,
+            );
+        }
+        for child_name in children.into_iter().rev() {
+            let child_path = format!("{path}/{child_name}");
+            stack.push((child_path, child_name, path.clone()));
+        }
     }
-    Ok(())
+
+    if !batch.is_empty() {
+        let nodes = std::mem::take(&mut batch);
+        emit_index_event(
+            app_handle,
+            connection_id,
+            run_id,
+            "batch",
+            indexed_count,
+            nodes,
+            None,
+        );
+    }
+
+    Ok(records)
+}
+
+fn cancelled_index_error(
+    shutdown: &Arc<AtomicBool>,
+    indexed_count: usize,
+) -> Option<IndexCollectError> {
+    if is_shutdown(shutdown) {
+        return Some(IndexCollectError::Cancelled { indexed_count });
+    }
+    None
+}
+
+fn take_full_index_batch(
+    batch: &mut Vec<CachedTreeNodeDto>,
+    batch_size: usize,
+) -> Option<Vec<CachedTreeNodeDto>> {
+    if batch.len() < batch_size {
+        return None;
+    }
+    Some(std::mem::take(batch))
+}
+
+fn node_record_to_cached_tree_node(node: &NodeRecord) -> CachedTreeNodeDto {
+    CachedTreeNodeDto {
+        path: node.path.clone(),
+        name: node.name.clone(),
+        parent_path: node.parent_path.clone(),
+        has_children: node.has_children,
+    }
 }
 
 fn child_path(parent_path: &str, child_name: &str) -> String {
@@ -1331,6 +1503,17 @@ fn map_cache_event_type(event_type: &str) -> Option<&'static str> {
     }
 }
 
+fn map_index_event_type(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "started" => Some("started"),
+        "batch" => Some("batch"),
+        "completed" => Some("completed"),
+        "failed" => Some("failed"),
+        "cancelled" => Some("cancelled"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1463,6 +1646,78 @@ mod tests {
         );
         assert_eq!(map_cache_event_type("nodes_added"), Some("nodes_added"));
         assert_eq!(map_cache_event_type("nodes_removed"), Some("nodes_removed"));
+    }
+
+    #[test]
+    fn index_event_types_are_exposed_for_frontend_streaming_index() {
+        assert_eq!(map_index_event_type("started"), Some("started"));
+        assert_eq!(map_index_event_type("batch"), Some("batch"));
+        assert_eq!(map_index_event_type("completed"), Some("completed"));
+        assert_eq!(map_index_event_type("failed"), Some("failed"));
+        assert_eq!(map_index_event_type("cancelled"), Some("cancelled"));
+        assert_eq!(map_index_event_type("unknown"), None);
+    }
+
+    #[test]
+    fn index_event_dto_serializes_fields_as_camel_case() {
+        let event = IndexEventDto {
+            connection_id: "conn-a".into(),
+            run_id: "run-a".into(),
+            event_type: "batch".into(),
+            indexed_count: 1,
+            nodes: vec![CachedTreeNodeDto {
+                path: "/configs".into(),
+                name: "configs".into(),
+                parent_path: Some("/".into()),
+                has_children: true,
+            }],
+            error: None,
+        };
+
+        let value = serde_json::to_value(event).expect("event should serialize");
+
+        assert_eq!(value["connectionId"], "conn-a");
+        assert_eq!(value["runId"], "run-a");
+        assert_eq!(value["eventType"], "batch");
+        assert_eq!(value["indexedCount"], 1);
+        assert_eq!(value["nodes"][0]["parentPath"], "/");
+        assert_eq!(value["nodes"][0]["hasChildren"], true);
+        assert!(value.get("connection_id").is_none());
+    }
+
+    #[test]
+    fn full_index_batches_are_cut_at_the_configured_size() {
+        let mut batch = (0..INDEX_BATCH_SIZE - 1)
+            .map(|index| CachedTreeNodeDto {
+                path: format!("/{index}"),
+                name: index.to_string(),
+                parent_path: Some("/".into()),
+                has_children: false,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(take_full_index_batch(&mut batch, INDEX_BATCH_SIZE).is_none());
+        batch.push(CachedTreeNodeDto {
+            path: "/last".into(),
+            name: "last".into(),
+            parent_path: Some("/".into()),
+            has_children: false,
+        });
+
+        let emitted = take_full_index_batch(&mut batch, INDEX_BATCH_SIZE)
+            .expect("batch should emit at configured size");
+        assert_eq!(emitted.len(), INDEX_BATCH_SIZE);
+        assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn shutdown_requests_cancel_the_streaming_index() {
+        let shutdown = Arc::new(AtomicBool::new(true));
+
+        assert_eq!(
+            cancelled_index_error(&shutdown, 42),
+            Some(IndexCollectError::Cancelled { indexed_count: 42 })
+        );
     }
 
     #[test]

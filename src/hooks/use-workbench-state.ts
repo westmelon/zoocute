@@ -12,13 +12,13 @@ import {
   getNodeDetails,
   getTreeSnapshot,
   listChildren,
-  loadFullTree as loadFullTreeCmd,
   saveNode,
 } from "../lib/commands";
 import type {
   ActiveSession,
   CacheEvent,
   Charset,
+  IndexEvent,
   NodeTreeItem,
   RibbonMode,
   SavedConnection,
@@ -271,9 +271,11 @@ export function useWorkbenchState(isReadOnly = false) {
   const nodeSearch = useNodeSearch(activeTabId);
   const unlistenRefs = useRef<Map<string, () => void>>(new Map());
   const cacheUnlistenRefs = useRef<Map<string, () => void>>(new Map());
+  const indexUnlistenRefs = useRef<Map<string, () => void>>(new Map());
   const sessionUnlistenRefs = useRef<Map<string, () => void>>(new Map());
   const pendingChildRefreshRefs = useRef<Map<string, Set<string>>>(new Map());
   const cacheSnapshotsRef = useRef<Map<string, TreeSnapshot>>(new Map());
+  const indexRunRefs = useRef<Map<string, string>>(new Map());
   const reconnectingRefs = useRef<Set<string>>(new Set());
   const reconnectPromisesRef = useRef<Map<string, Promise<void>>>(new Map());
 
@@ -285,6 +287,7 @@ export function useWorkbenchState(isReadOnly = false) {
   const [pendingConnectionId, setPendingConnectionId] = useState<string | null>(null);
   const [pendingNavPath, setPendingNavPath] = useState<string | null>(null);
   const [indexingConnections, setIndexingConnections] = useState<Set<string>>(new Set());
+  const [indexedNodeCounts, setIndexedNodeCounts] = useState<Record<string, number>>({});
   const [, setCacheSnapshotVersion] = useState(0);
   const sessionsRef = useRef(sessions);
 
@@ -330,6 +333,10 @@ export function useWorkbenchState(isReadOnly = false) {
         unlisten();
       }
       cacheUnlistenRefs.current.clear();
+      for (const unlisten of indexUnlistenRefs.current.values()) {
+        unlisten();
+      }
+      indexUnlistenRefs.current.clear();
       for (const unlisten of sessionUnlistenRefs.current.values()) {
         unlisten();
       }
@@ -459,19 +466,52 @@ export function useWorkbenchState(isReadOnly = false) {
     }
   }
 
-  async function restartBackgroundIndex(connectionId: string) {
-    setIndexingConnections((prev) => new Set([...prev, connectionId]));
-    loadFullTreeCmd(connectionId)
-      .then((allNodes) => nodeSearch.bulkIndex(connectionId, allNodes))
-      .catch(() => { /* partial index is still useful; silently ignore */ })
-      .finally(() => {
-        setIndexingConnections((prev) => {
-          const next = new Set(prev);
-          next.delete(connectionId);
-          return next;
-        });
+  const handleIndexEvent = useEffectEvent((event: IndexEvent) => {
+    if (event.eventType === "started") {
+      indexRunRefs.current.set(event.connectionId, event.runId);
+      nodeSearch.clearIndex(event.connectionId);
+      setIndexedNodeCounts((prev) => ({ ...prev, [event.connectionId]: 0 }));
+      setIndexingConnections((prev) => new Set([...prev, event.connectionId]));
+      return;
+    }
+
+    if (indexRunRefs.current.get(event.connectionId) !== event.runId) return;
+
+    if (event.eventType === "batch") {
+      nodeSearch.upsertCachedNodes(event.connectionId, event.nodes);
+      setIndexedNodeCounts((prev) => ({
+        ...prev,
+        [event.connectionId]: event.indexedCount,
+      }));
+      return;
+    }
+
+    if (
+      event.eventType === "completed" ||
+      event.eventType === "failed" ||
+      event.eventType === "cancelled"
+    ) {
+      if (
+        (event.eventType === "failed" || event.eventType === "cancelled") &&
+        nodeSearch.indexSize(event.connectionId) === 0
+      ) {
+        const session = sessionsRef.current.get(event.connectionId);
+        if (session) {
+          nodeSearch.indexNodes(event.connectionId, "/", session.treeNodes);
+        }
+      }
+      setIndexedNodeCounts((prev) => ({
+        ...prev,
+        [event.connectionId]: event.indexedCount,
+      }));
+      setIndexingConnections((prev) => {
+        const next = new Set(prev);
+        next.delete(event.connectionId);
+        return next;
       });
-  }
+      indexRunRefs.current.delete(event.connectionId);
+    }
+  });
 
   const reconnectSession = useEffectEvent(async (connectionId: string) => {
     const session = sessionsRef.current.get(connectionId);
@@ -490,6 +530,9 @@ export function useWorkbenchState(isReadOnly = false) {
       try {
         await disconnectServerCmd(connectionId).catch(() => {
           // best-effort cleanup before re-establishing a fresh session
+        });
+        await ensureIndexListener(connectionId).catch(() => {
+          // streaming search index is best-effort; tree browsing remains available
         });
         await connectServer(connectionId, {
           connectionString: session.connection.connectionString,
@@ -511,7 +554,6 @@ export function useWorkbenchState(isReadOnly = false) {
         cacheSnapshotsRef.current.delete(connectionId);
         void cacheTreeSnapshot(connectionId);
         await restoreSessionView(connectionId, latestSession);
-        void restartBackgroundIndex(connectionId);
         setConnectionNotice("连接已恢复");
       } catch (error) {
         setConnectionError(formatConnectionError(error));
@@ -596,6 +638,19 @@ export function useWorkbenchState(isReadOnly = false) {
     });
   }
 
+  async function ensureIndexListener(connectionId: string) {
+    if (indexUnlistenRefs.current.has(connectionId)) return;
+    const handler = (event: { payload: IndexEvent }) => {
+      if (event.payload.connectionId !== connectionId) return;
+      handleIndexEvent(event.payload);
+    };
+
+    const unlisten = await getCurrentWebviewWindow().listen<IndexEvent>("zk-index-event", handler);
+    indexUnlistenRefs.current.set(connectionId, () => {
+      void unlisten();
+    });
+  }
+
   async function ensureSessionListener(connectionId: string) {
     if (sessionUnlistenRefs.current.has(connectionId)) return;
     const handler = (event: { payload: SessionEvent }) => {
@@ -639,6 +694,9 @@ export function useWorkbenchState(isReadOnly = false) {
     let connected = false;
     try {
       await yieldToBrowser();
+      await ensureIndexListener(params.connectionId).catch(() => {
+        // streaming search index is best-effort; connection should still proceed
+      });
       await connectServer(params.connectionId, {
         connectionString: params.connectionString,
         username: params.username || undefined,
@@ -663,18 +721,29 @@ export function useWorkbenchState(isReadOnly = false) {
         // session listener setup is best-effort and must not block connect flow
       });
       void cacheTreeSnapshot(params.connectionId);
-
-      void restartBackgroundIndex(params.connectionId);
     } catch (error) {
       if (connected) {
         cacheSnapshotsRef.current.delete(params.connectionId);
+        indexRunRefs.current.delete(params.connectionId);
         pendingChildRefreshRefs.current.delete(params.connectionId);
+        setIndexingConnections((prev) => {
+          const next = new Set(prev);
+          next.delete(params.connectionId);
+          return next;
+        });
+        setIndexedNodeCounts((prev) => {
+          const next = { ...prev };
+          delete next[params.connectionId];
+          return next;
+        });
         try {
           await disconnectServerCmd(params.connectionId);
         } catch {
           // best-effort cleanup after a partially successful connection attempt
         }
       }
+      indexUnlistenRefs.current.get(params.connectionId)?.();
+      indexUnlistenRefs.current.delete(params.connectionId);
       setConnectionError(formatConnectionError(error));
     } finally {
       setIsConnecting(false);
@@ -734,11 +803,24 @@ export function useWorkbenchState(isReadOnly = false) {
     unlistenRefs.current.delete(connectionId);
     cacheUnlistenRefs.current.get(connectionId)?.();
     cacheUnlistenRefs.current.delete(connectionId);
+    indexUnlistenRefs.current.get(connectionId)?.();
+    indexUnlistenRefs.current.delete(connectionId);
     sessionUnlistenRefs.current.get(connectionId)?.();
     sessionUnlistenRefs.current.delete(connectionId);
     cacheSnapshotsRef.current.delete(connectionId);
+    indexRunRefs.current.delete(connectionId);
     pendingChildRefreshRefs.current.delete(connectionId);
     reconnectingRefs.current.delete(connectionId);
+    setIndexingConnections((prev) => {
+      const next = new Set(prev);
+      next.delete(connectionId);
+      return next;
+    });
+    setIndexedNodeCounts((prev) => {
+      const next = { ...prev };
+      delete next[connectionId];
+      return next;
+    });
     try {
       await disconnectServerCmd(connectionId);
     } catch {
@@ -1094,6 +1176,7 @@ export function useWorkbenchState(isReadOnly = false) {
     searchResults: nodeSearch.searchResults,
     searchMode: nodeSearch.searchMode,
     isIndexing: activeTabId ? indexingConnections.has(activeTabId) : false,
+    indexedNodeCount: activeTabId ? indexedNodeCounts[activeTabId] ?? 0 : 0,
     cacheStatus,
     locate,
   };

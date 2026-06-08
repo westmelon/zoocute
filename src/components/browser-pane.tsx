@@ -20,13 +20,14 @@ interface BrowserPaneProps {
   searchMode: SearchMode;
   onLocate: (path: string) => void;
   isIndexing: boolean;
+  indexedNodeCount: number;
 }
 
 export function BrowserPane({
   treeNodes, activePath, expandedPaths, loadingPaths,
   connectionString, isConnected,
   onSelectPath, onTogglePath, onContextMenu,
-  searchQuery, onSearchQueryChange, searchResults, searchMode, onLocate, isIndexing,
+  searchQuery, onSearchQueryChange, searchResults, searchMode, onLocate, isIndexing, indexedNodeCount,
 }: BrowserPaneProps) {
   const treeRef = useRef<HTMLDivElement>(null);
 
@@ -56,7 +57,9 @@ export function BrowserPane({
         onChange={(e) => onSearchQueryChange(e.target.value)}
       />
       {isIndexing && (
-        <div className="search-indexing-hint">正在建立搜索索引…</div>
+        <div className="search-indexing-hint">
+          正在建立搜索索引，已索引 {indexedNodeCount} 个节点…
+        </div>
       )}
 
       {searchMode === "results" ? (
@@ -64,6 +67,7 @@ export function BrowserPane({
           results={searchResults}
           keyword={searchQuery}
           onLocate={onLocate}
+          isIndexing={isIndexing}
         />
       ) : (
         <div ref={treeRef} style={{ display: "contents" }}>
@@ -93,17 +97,20 @@ export function BrowserPane({
 // ─── Search result list ──────────────────────────────────────────────────────
 
 function SearchResultList({
-  results, keyword, onLocate,
+  results, keyword, onLocate, isIndexing,
 }: {
   results: SearchResult[];
   keyword: string;
   onLocate: (path: string) => void;
+  isIndexing: boolean;
 }) {
   if (results.length === 0) {
     return (
       <div className="search-empty">
         <div>未找到匹配的已缓存节点</div>
-        <div className="search-empty-hint">仅搜索本次会话已加载的节点</div>
+        <div className="search-empty-hint">
+          {isIndexing ? "索引仍在构建，结果可能不完整" : "仅搜索本次会话已加载的节点"}
+        </div>
       </div>
     );
   }
